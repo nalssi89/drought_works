@@ -54,6 +54,34 @@ const payloadSchema = z.object({
   search_date_db: z.string().optional(),
 });
 
+const cachedStationSchema = z.object({
+  code: z.number().int(),
+  name: z.string().min(1),
+  normal: z.number().nonnegative(),
+  precipitation: z.number().nonnegative(),
+  ratio: z.number().nonnegative(),
+});
+
+const cachedAggregateSchema = z.object({
+  code: z.string(),
+  normal: z.number().nonnegative(),
+  precipitation: z.number().nonnegative(),
+  ratio: z.number().nonnegative(),
+  rank: z.number().int().positive().nullable(),
+});
+
+const cachedPayloadSchema = z.object({
+  schemaVersion: z.literal(2),
+  period: periodSchema,
+  effectiveDate: dateSchema,
+  mode: z.enum(["official", "intraday"]),
+  observationTime: z.string().regex(/^\d{4}-\d{2}-\d{2}T(?:0\d|1\d|2[0-3]):00$/).nullable(),
+  stations: z.array(cachedStationSchema).length(66),
+  regions: z.array(cachedAggregateSchema).default([]),
+  admins: z.array(cachedAggregateSchema).default([]),
+  fetchedAt: z.string().datetime(),
+});
+
 export type Aggregate = Readonly<{
   code: string;
   normal: number;
@@ -119,7 +147,11 @@ export function addMonths(date: string, months: number): string {
   return value.toISOString().slice(0, 10);
 }
 
-export async function loadDashboard(requestedDate: string | null, period: Period, observationTime: string | null = null): Promise<DashboardResult> {
+export async function loadDashboard(requestedDate: string | null, period: Period, observationTime: string | null = null, useCachedLatest = false): Promise<DashboardResult> {
+  if (useCachedLatest) {
+    const cached = await loadCachedDashboard(period, observationTime ? "intraday" : "official");
+    if (cached.kind === "ok") return cached;
+  }
   if (observationTime) return loadIntradayDashboard(observationTime, period);
   if (requestedDate) return loadOne(requestedDate, period);
   let candidate = latestCandidateDate();
@@ -129,6 +161,50 @@ export async function loadDashboard(requestedDate: string | null, period: Period
     candidate = addDays(candidate, -1);
   }
   return { kind: "unavailable", message: "최근 7일 안에 완료된 공식 일자료를 찾지 못했습니다." };
+}
+
+async function loadCachedDashboard(period: Period, mode: "official" | "intraday"): Promise<DashboardResult> {
+  const cacheUrl = process.env.KMA_CACHE_URL;
+  const proxyKey = process.env.KMA_PROXY_ANON_KEY;
+  if (!cacheUrl || !proxyKey) return { kind: "unavailable", message: "예약 갱신 자료가 설정되지 않았습니다." };
+  try {
+    const value = await ky.get(cacheUrl, {
+      searchParams: { period, mode },
+      headers: { apikey: proxyKey, Authorization: `Bearer ${proxyKey}` },
+      retry: { limit: 2, methods: ["get"] },
+      timeout: 20_000,
+    }).json<unknown>();
+    const cached = cachedPayloadSchema.parse(value);
+    if (cached.period !== period || cached.mode !== mode) throw new TypeError("예약 갱신 자료의 조회 조건이 다릅니다.");
+    const stations = cached.stations.map((station) => ({ ...station }));
+    const calculated = aggregateStations(stations);
+    const regions = mode === "official" && cached.regions.length === 12 ? cached.regions : calculated.regions;
+    const admins = mode === "official" && cached.admins.length === 4 ? cached.admins : calculated.admins;
+    const startDate = periodStart(cached.effectiveDate, period);
+    const elapsedHours = cached.observationTime ? Number(cached.observationTime.slice(11, 13)) : 24;
+    return {
+      kind: "ok",
+      data: {
+        requestedDate: cached.effectiveDate,
+        effectiveDate: cached.effectiveDate,
+        searchPeriod: mode === "official"
+          ? `${displayDate(startDate)} ~ ${displayDate(cached.effectiveDate)}`
+          : `${displayDate(startDate)} 00시 ~ ${displayDate(cached.effectiveDate)} ${String(elapsedHours).padStart(2, "0")}시 (당일 관측 반영 추정)`,
+        period,
+        regions,
+        admins,
+        stations,
+        fetchedAt: cached.fetchedAt,
+        mode,
+        observationTime: cached.observationTime,
+      },
+    };
+  } catch (error) {
+    if (error instanceof HTTPError || error instanceof TimeoutError || error instanceof TypeError || error instanceof z.ZodError) {
+      return { kind: "unavailable", message: "예약 갱신 자료를 불러오지 못했습니다." };
+    }
+    throw error;
+  }
 }
 
 async function loadOne(requestedDate: string, period: Period): Promise<DashboardResult> {

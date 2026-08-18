@@ -3,10 +3,12 @@ import test from "node:test";
 
 import {
   adjustStation,
+  latestObservationTime,
   parseDailyNormals,
   parseHourlyDailyRain,
   periodStart,
 } from "../app/lib/intraday.ts";
+import { millisecondsUntilNextHourlyRefresh } from "../app/lib/refresh.ts";
 
 test("moves the rolling window start to D+1", () => {
   assert.equal(periodStart("2026-08-18", "1m"), "2026-07-19");
@@ -52,4 +54,20 @@ test("replaces the first full day with the selected partial end day", () => {
   assert.equal(result.precipitation, 860.9);
   assert.equal(result.normal, 1006.8);
   assert.equal(result.ratio, 85.5);
+});
+
+test("refreshes at minute 10 of the next applicable hour", () => {
+  assert.equal(
+    millisecondsUntilNextHourlyRefresh(new Date("2026-08-18T09:04:30Z")),
+    6.25 * 60_000,
+  );
+  assert.equal(
+    millisecondsUntilNextHourlyRefresh(new Date("2026-08-18T09:10:45Z")),
+    60 * 60_000,
+  );
+});
+
+test("offers the new hour from minute 10 KST", () => {
+  assert.equal(latestObservationTime(new Date("2026-08-17T16:09:00Z")), "2026-08-17T23:00");
+  assert.equal(latestObservationTime(new Date("2026-08-17T16:10:00Z")), "2026-08-18T01:00");
 });

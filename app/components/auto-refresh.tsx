@@ -2,15 +2,16 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
+import { millisecondsUntilNextHourlyRefresh } from "../lib/refresh";
 
 export function AutoRefresh() {
   const router = useRouter();
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
+    const timer = window.setTimeout(() => {
       if (document.visibilityState === "visible") router.refresh();
-    }, 300_000);
-    return () => window.clearInterval(timer);
+    }, millisecondsUntilNextHourlyRefresh());
+    return () => window.clearTimeout(timer);
   }, [router]);
 
   return null;

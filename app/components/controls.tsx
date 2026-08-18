@@ -15,9 +15,10 @@ type ControlsProps = Readonly<{
   intraday: boolean;
   observationTime: string;
   maximumObservationTime: string;
+  liveLatest: boolean;
 }>;
 
-export function Controls({ date, period, intraday, observationTime, maximumObservationTime }: ControlsProps) {
+export function Controls({ date, period, intraday, observationTime, maximumObservationTime, liveLatest }: ControlsProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const moves = [
@@ -47,7 +48,7 @@ export function Controls({ date, period, intraday, observationTime, maximumObser
       <nav className="periods" aria-label="누적기간">
         <span>누적기간</span>
         {PERIOD_OPTIONS.map(([value, label]) => (
-          <Link className={value === period ? "period-button selected" : "period-button"} href={query(date, value, intraday, intraday ? observationTime : null)} key={value} aria-current={value === period ? "page" : undefined}>{label}</Link>
+          <Link className={value === period ? "period-button selected" : "period-button"} href={liveLatest ? `/?period=${value}${intraday ? "&intraday=1" : ""}` : query(date, value, intraday, intraday ? observationTime : null)} key={value} aria-current={value === period ? "page" : undefined}>{label}</Link>
         ))}
       </nav>
       <div className="intraday-controls">

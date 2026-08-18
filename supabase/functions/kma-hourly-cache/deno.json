@@ -1,0 +1,7 @@
+{
+  "verify_jwt": true,
+  "imports": {
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.112.1",
+    "ky": "https://esm.sh/ky@1.7.5"
+  }
+}

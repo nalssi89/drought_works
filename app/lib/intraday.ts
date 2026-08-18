@@ -45,7 +45,7 @@ export function parseObservationTime(value: string | undefined): string | null {
 }
 
 export function latestObservationTime(now = new Date()): string {
-  const reliable = new Date(now.valueOf() - 15 * 60_000);
+  const reliable = new Date(now.valueOf() - 10 * 60_000);
   const parts = KST_DATE_TIME_FORMATTER.formatToParts(reliable);
   const values = new Map(parts.map((part) => [part.type, part.value]));
   const date = `${values.get("year")}-${values.get("month")}-${values.get("day")}`;
