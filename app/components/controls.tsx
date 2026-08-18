@@ -37,7 +37,7 @@ export function Controls({ date, period, intraday, observationTime, maximumObser
           const nextDate = event.currentTarget.value;
           navigate(nextDate, period, `${nextDate}T${observationTime.slice(11)}`);
         }} />
-        <span className="update-status" aria-live="polite">{pending ? "자료 갱신 중…" : "변경 즉시 반영"}</span>
+        {pending ? <span className="update-status" aria-live="polite">자료 갱신 중…</span> : null}
       </div>
       <nav className="date-moves" aria-label="날짜 빠른 이동">
         {moves.slice(0, 4).map(([label, value]) => <Link href={query(value, period, intraday, intraday ? `${value}T${observationTime.slice(11)}` : null)} key={label}>{label}</Link>)}

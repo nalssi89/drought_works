@@ -22,7 +22,7 @@ export default async function Home({ searchParams }: PageProps) {
     const date = requestedDate ?? "";
     return (
       <main className="site-shell">
-        <header className="site-header"><div><p className="eyebrow">기상청 공식 일자료</p><h1>권역별 누적강수 현황</h1></div></header>
+        <header className="site-header"><h1>권역별 누적강수 현황</h1></header>
         {date ? <Controls date={date} period={period} intraday={intraday} observationTime={observationTime ?? `${date}T18:00`} maximumObservationTime={maximumObservationTime} /> : null}
         <section className="error-panel" role="alert"><h2>자료를 표시할 수 없습니다</h2><p>{result.kind === "missing" ? `${result.requestedDate} 기준 공식 자료가 없습니다.` : result.message}</p><a href={`/?period=${period}`}>최신 완료일로 돌아가기</a></section>
       </main>
@@ -34,11 +34,7 @@ export default async function Home({ searchParams }: PageProps) {
     <main className="site-shell">
       <AutoRefresh />
       <header className="site-header">
-        <div>
-          <p className="eyebrow">{data.mode === "intraday" ? "기상청 시간자료 기반 추정" : "기상청 공식 일자료"}</p>
-          <h1>권역별 누적강수 현황</h1>
-        </div>
-        <div className="freshness"><strong>{data.mode === "intraday" ? "당일 관측 반영" : "정상 제공"}</strong><span>기준 {data.observationTime ? data.observationTime.replace("T", " ") : `${data.effectiveDate.replaceAll("-", ".")}.`}</span><span>5분 자동 재조회</span></div>
+        <h1>권역별 누적강수 현황</h1>
       </header>
       <Controls date={data.effectiveDate} period={data.period} intraday={data.mode === "intraday"} observationTime={data.observationTime ?? `${data.effectiveDate}T18:00`} maximumObservationTime={maximumObservationTime} />
       {data.mode === "intraday" ? <p className="estimate-notice" role="note"><strong>추정 산출:</strong> 선택 시각의 공식 RN_DAY 일누적을 반영하고, 평년값은 종료일 일평년값의 경과시간 비율({Number(data.observationTime?.slice(11, 13))}/24)을 적용했습니다. 시간 평년값과 순위는 제공되지 않습니다.</p> : null}
