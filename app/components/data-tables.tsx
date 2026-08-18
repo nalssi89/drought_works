@@ -11,6 +11,7 @@ export function RegionTable({ data }: Readonly<{ data: DashboardData }>) {
   return (
     <div className="table-scroll region-table-scroll">
       <table className="region-matrix">
+        <colgroup><col className="metric-column" /><col span={12} className="region-column" /></colgroup>
         <thead>
           <tr><th rowSpan={2} scope="col">구분</th><th rowSpan={2} scope="col">서울·인천<br />경기도</th><th colSpan={3} scope="colgroup">강원특별자치도</th>{REGION_LABELS.slice(4).map((label) => <th rowSpan={2} scope="col" key={label}>{lines(label)}</th>)}</tr>
           <tr><th scope="col">전체</th><th scope="col">영서</th><th scope="col">영동</th></tr>
@@ -20,7 +21,7 @@ export function RegionTable({ data }: Readonly<{ data: DashboardData }>) {
           <MetricRow label="평년값 (mm)" cells={data.regions.map((row) => ({ key: row.code, value: format(row.normal) }))} />
           <MetricRow bold label="평년비 (%)" cells={data.regions.map((row) => ({ key: row.code, value: format(row.ratio) }))} />
           <MetricRow label="강수부족량 (mm)" cells={data.regions.map((row) => ({ key: row.code, value: shortage(row) }))} />
-          <MetricRow label="최저순위 (73년이후)" cells={data.regions.map((row) => ({ key: row.code, value: `${row.rank}/${denominator}` }))} />
+          <MetricRow label="최저순위 (73년이후)" cells={data.regions.map((row) => ({ key: row.code, value: row.rank === null ? "—" : `${row.rank}/${denominator}` }))} />
         </tbody>
       </table>
     </div>
@@ -32,13 +33,14 @@ export function AdminTable({ data }: Readonly<{ data: DashboardData }>) {
   return (
     <div className="table-scroll admin-table-scroll">
       <table className="admin-matrix">
+        <colgroup><col className="metric-column" /><col span={4} /></colgroup>
         <thead><tr><th scope="col">구분</th>{ADMIN_LABELS.map((label) => <th scope="col" key={label}>{lines(label)}</th>)}</tr></thead>
         <tbody>
           <MetricRow label="강수량 (mm)" cells={data.admins.map((row) => ({ key: row.code, value: format(row.precipitation) }))} />
           <MetricRow label="평년값 (mm)" cells={data.admins.map((row) => ({ key: row.code, value: format(row.normal) }))} />
           <MetricRow bold label="평년비 (%)" cells={data.admins.map((row) => ({ key: row.code, value: format(row.ratio) }))} />
           <MetricRow label="강수부족량 (mm)" cells={data.admins.map((row) => ({ key: row.code, value: shortage(row) }))} />
-          <MetricRow label="최저순위 (73년이후)" cells={data.admins.map((row) => ({ key: row.code, value: `${row.rank}/${denominator}` }))} />
+          <MetricRow label="최저순위 (73년이후)" cells={data.admins.map((row) => ({ key: row.code, value: row.rank === null ? "—" : `${row.rank}/${denominator}` }))} />
         </tbody>
       </table>
     </div>

@@ -27,6 +27,7 @@
   --font-body: 14px;
   --font-section: 19px;
   --font-title: 24px;
+  --region-column: 100px;
 }
 
 * { box-sizing: border-box; }
@@ -48,15 +49,20 @@ a { color: inherit; }
 .control-panel { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: var(--space-2) var(--space-5); padding: var(--space-4) 0; }
 .date-form, .date-moves, .periods { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
 .date-form label, .periods > span { min-width: 64px; font-size: var(--font-body); font-weight: 700; }
-.date-form input, .date-form button, .date-moves a, .period-button { display: inline-flex; min-height: var(--control-height); align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--surface); color: var(--ink); text-decoration: none; }
+.date-form input, .date-moves a, .period-button, .time-control input { display: inline-flex; min-height: var(--control-height); align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--surface); color: var(--ink); text-decoration: none; }
 .date-form input { padding: 0 10px; }
-.date-form button { padding: 0 14px; cursor: pointer; }
+.update-status { min-width: 88px; color: var(--muted); font-size: var(--font-caption); }
 .date-moves a { min-width: 54px; padding: 0 10px; font-size: var(--font-small); }
 .date-moves .now-link { border-color: var(--navy-900); background: var(--navy-900); color: var(--surface); font-weight: 800; }
 .periods { grid-column: 1 / -1; }
 .period-button { min-width: 94px; padding: 0 14px; cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
-.date-form button:hover, .date-moves a:hover, .period-button:hover { background: var(--surface-info); }
+.date-moves a:hover, .period-button:hover { background: var(--surface-info); }
 .period-button.selected { border-color: var(--navy-900); background: var(--navy-900); color: var(--surface); font-weight: 700; }
+.intraday-controls { display: flex; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-5); padding-top: var(--space-2); border-top: 1px solid var(--line); }
+.check-control, .time-control { display: inline-flex; min-height: var(--control-height); align-items: center; gap: var(--space-2); font-size: var(--font-body); font-weight: 700; }
+.check-control input { width: 18px; height: 18px; accent-color: var(--navy-900); }
+.time-control input { padding: 0 10px; font-weight: 500; }
+.estimate-notice { margin: 0 0 var(--space-4); padding: 10px 12px; border-left: 4px solid var(--blue-600); background: var(--surface-info); color: var(--ink); font-size: var(--font-small); }
 button:focus-visible, input:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid var(--blue-600); outline-offset: 2px; }
 .data-section { border-top: 1px solid var(--line); padding-top: var(--space-5); }
 .section-title { display: flex; align-items: end; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-2); }
@@ -74,12 +80,15 @@ tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
 thead th { background: var(--navy-800); color: var(--surface); font-size: var(--font-body); text-align: center; }
 thead th:first-child, tbody th { position: sticky; left: 0; z-index: 1; }
 tbody th { background: var(--surface-subtle); color: var(--navy-900); text-align: left; }
-.region-matrix { min-width: 1280px; }
+.region-matrix { width: 1420px; min-width: 1420px; table-layout: fixed; }
+.region-matrix .metric-column { width: 220px; }
+.region-matrix .region-column { width: var(--region-column); }
 .region-matrix thead tr:first-child th { border-bottom-color: var(--surface); }
 .region-matrix tbody th, .admin-matrix tbody th { width: 220px; text-align: center; }
 .ratio-row td { color: var(--navy-900); font-weight: 800; }
 .admin-table-scroll { margin-top: 12px; }
-.admin-matrix { min-width: 760px; }
+.admin-matrix { min-width: 760px; table-layout: fixed; }
+.admin-matrix .metric-column { width: 220px; }
 .source-note { margin: 10px 0 var(--space-5); color: var(--muted); font-size: var(--font-small); text-align: right; }
 .station-details { border: 1px solid var(--line); background: var(--surface-subtle); }
 .station-details summary { padding: 14px 16px; color: var(--navy-900); cursor: pointer; font-weight: 800; }
@@ -98,6 +107,7 @@ footer a { color: var(--blue-600); }
 @media (max-width: 960px) {
   .control-panel { grid-template-columns: 1fr; }
   .date-moves, .periods { grid-column: 1; }
+  .intraday-controls { grid-column: 1; }
 }
 @media (max-width: 720px) {
   .site-shell { padding: var(--space-3); }

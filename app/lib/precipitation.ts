@@ -1,5 +1,15 @@
 import ky, { HTTPError, TimeoutError } from "ky";
 import { z } from "zod";
+import { fetchDailyNormals, fetchHourlyDailyRain } from "./api-hub";
+import {
+  adjustStations,
+  aggregateStations,
+  latestObservationTime,
+  parseObservationTime,
+  periodStart,
+} from "./intraday";
+
+export { latestObservationTime, parseObservationTime };
 
 const PERIODS = ["1m", "3m", "6m", "12m"] as const;
 const REGION_CODES = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"] as const;
@@ -49,7 +59,7 @@ export type Aggregate = Readonly<{
   normal: number;
   precipitation: number;
   ratio: number;
-  rank: number;
+  rank: number | null;
 }>;
 
 export type Station = Readonly<{
@@ -69,6 +79,8 @@ export type DashboardData = Readonly<{
   admins: readonly Aggregate[];
   stations: readonly Station[];
   fetchedAt: string;
+  mode: "official" | "intraday";
+  observationTime: string | null;
 }>;
 
 export type DashboardResult =
@@ -107,7 +119,8 @@ export function addMonths(date: string, months: number): string {
   return value.toISOString().slice(0, 10);
 }
 
-export async function loadDashboard(requestedDate: string | null, period: Period): Promise<DashboardResult> {
+export async function loadDashboard(requestedDate: string | null, period: Period, observationTime: string | null = null): Promise<DashboardResult> {
+  if (observationTime) return loadIntradayDashboard(observationTime, period);
   if (requestedDate) return loadOne(requestedDate, period);
   let candidate = latestCandidateDate();
   for (let attempt = 0; attempt < 7; attempt += 1) {
@@ -143,11 +156,54 @@ async function loadOne(requestedDate: string, period: Period): Promise<Dashboard
           ratio: row.rn_ratio_sort,
         })),
         fetchedAt: new Date().toISOString(),
+        mode: "official",
+        observationTime: null,
       },
     };
   } catch (error) {
     if (error instanceof HTTPError || error instanceof TimeoutError || error instanceof TypeError || error instanceof z.ZodError) {
       return { kind: "unavailable", message: "기상청 공식 자료를 불러오지 못했습니다. 잠시 후 다시 조회해 주세요." };
+    }
+    throw error;
+  }
+}
+
+async function loadIntradayDashboard(observationTime: string, period: Period): Promise<DashboardResult> {
+  const effectiveDate = observationTime.slice(0, 10);
+  const elapsedHours = Number(observationTime.slice(11, 13));
+  const baseDate = addDays(effectiveDate, -1);
+  const base = await loadOne(baseDate, period);
+  if (base.kind !== "ok") return base;
+
+  const startDate = periodStart(effectiveDate, period);
+  const removedDate = addDays(startDate, -1);
+  try {
+    const [startRain, endRain, startNormals, endNormals] = await Promise.all([
+      fetchHourlyDailyRain(`${startDate}T00:00`),
+      fetchHourlyDailyRain(observationTime),
+      fetchDailyNormals(removedDate),
+      fetchDailyNormals(effectiveDate),
+    ]);
+    const stations = adjustStations(base.data.stations, startRain, endRain, startNormals, endNormals, elapsedHours);
+    const { regions, admins } = aggregateStations(stations);
+    return {
+      kind: "ok",
+      data: {
+        requestedDate: effectiveDate,
+        effectiveDate,
+        searchPeriod: `${displayDate(startDate)} 00시 ~ ${displayDate(effectiveDate)} ${String(elapsedHours).padStart(2, "0")}시 (당일 관측 반영 추정)`,
+        period,
+        regions,
+        admins,
+        stations,
+        fetchedAt: new Date().toISOString(),
+        mode: "intraday",
+        observationTime,
+      },
+    };
+  } catch (error) {
+    if (error instanceof HTTPError || error instanceof TimeoutError || error instanceof TypeError || error instanceof z.ZodError) {
+      return { kind: "unavailable", message: "기상청 시간자료 또는 평년값을 불러오지 못했습니다. 잠시 후 다시 조회해 주세요." };
     }
     throw error;
   }
@@ -193,4 +249,9 @@ function numeric(value: string): number {
   const parsed = Number(value.replaceAll(",", ""));
   if (!Number.isFinite(parsed)) throw new TypeError(`Invalid numeric value: ${value}`);
   return parsed;
+}
+
+function displayDate(value: string): string {
+  const [year, month, day] = value.split("-");
+  return `${year}년 ${month}월 ${day}일`;
 }
