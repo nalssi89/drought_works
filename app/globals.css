@@ -108,6 +108,7 @@ footer a { color: var(--blue-600); }
   .control-panel { grid-template-columns: 1fr; }
   .date-moves, .periods { grid-column: 1; }
   .intraday-controls { grid-column: 1; }
+  .section-title { align-items: start; flex-direction: column; }
 }
 @media (max-width: 720px) {
   .site-shell { padding: var(--space-3); }
@@ -115,7 +116,6 @@ footer a { color: var(--blue-600); }
   .freshness { text-align: left; }
   .date-form label, .periods > span { flex-basis: 100%; }
   .date-form input { flex: 1; min-width: 160px; }
-  .section-title { align-items: start; flex-direction: column; }
   .source-note { text-align: left; }
 }
 @media (prefers-reduced-motion: reduce) {
