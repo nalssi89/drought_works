@@ -109,6 +109,7 @@ footer a { color: var(--blue-600); }
   .date-moves, .periods { grid-column: 1; }
   .intraday-controls { grid-column: 1; }
   .section-title { align-items: start; flex-direction: column; }
+  .thresholds { align-self: end; }
 }
 @media (max-width: 720px) {
   .site-shell { padding: var(--space-3); }

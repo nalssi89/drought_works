@@ -53,5 +53,6 @@ test("keeps production metadata, aligned tables, and removes starter artifacts",
   assert.match(styles, /\.region-matrix\s*\{\s*width:\s*100%;\s*min-width:\s*1420px;/);
   assert.match(styles, /--font-title:\s*32px;/);
   assert.match(styles, /\.site-header h1\s*\{[^}]*font-weight:\s*800;/);
+  assert.match(styles, /@media \(max-width:\s*960px\)[\s\S]*?\.thresholds\s*\{\s*align-self:\s*end;\s*\}/);
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
 });
