@@ -40,20 +40,22 @@ test("uses official replacement normals for Daegu and Jeonju", () => {
   assert.equal(normals.get(864), 8.6);
 });
 
-test("replaces the first full day with the selected partial end day", () => {
-  const result = adjustStation({
+test("replaces rain with the selected partial end day while keeping the full daily normal", () => {
+  const input = {
     baseNormal: 1003.2,
     basePrecipitation: 851.9,
     startDayNormal: 2.4,
     startDayPrecipitation: 3,
     endDayNormal: 8,
     endDayPrecipitation: 12,
-    elapsedHours: 18,
-  });
+  } as const;
+  const morning = adjustStation(input);
+  const evening = adjustStation(input);
 
-  assert.equal(result.precipitation, 860.9);
-  assert.equal(result.normal, 1006.8);
-  assert.equal(result.ratio, 85.5);
+  assert.equal(morning.precipitation, 860.9);
+  assert.equal(morning.normal, 1008.8);
+  assert.equal(morning.normal, evening.normal);
+  assert.equal(morning.ratio, 85.3);
 });
 
 test("refreshes at minute 10 of the next applicable hour", () => {

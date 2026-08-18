@@ -260,7 +260,7 @@ async function loadIntradayDashboard(observationTime: string, period: Period): P
       fetchDailyNormals(removedDate),
       fetchDailyNormals(effectiveDate),
     ]);
-    const stations = adjustStations(base.data.stations, startRain, endRain, startNormals, endNormals, elapsedHours);
+    const stations = adjustStations(base.data.stations, startRain, endRain, startNormals, endNormals);
     const { regions, admins } = aggregateStations(stations);
     return {
       kind: "ok",

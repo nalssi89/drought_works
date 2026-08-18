@@ -28,14 +28,19 @@ test("server-renders the official six-month regional dashboard", async () => {
   assert.match(html, /부산/);
   assert.match(html, /울산/);
   assert.match(html, /창원/);
+  const stationTable = html.slice(html.indexOf("66개 대표지점 상세 보기"));
+  const sokcho = stationTable.indexOf('<td>90</td><th scope="row">속초</th>');
+  const daegwallyeong = stationTable.indexOf('<td>100</td><th scope="row">대관령</th>');
+  assert.ok(sokcho >= 0 && sokcho < daegwallyeong, "90 속초가 상세 표 첫 부분에 표시되어야 합니다.");
   assert.doesNotMatch(html, /codex-preview|SkeletonPreview|react-loading-skeleton/);
 });
 
-test("keeps production metadata and removes starter artifacts", async () => {
-  const [layout, page, packageJson] = await Promise.all([
+test("keeps production metadata, aligned tables, and removes starter artifacts", async () => {
+  const [layout, page, packageJson, styles] = await Promise.all([
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(layout, /generateMetadata/);
   assert.match(layout, /\/og\.png/);
@@ -45,5 +50,8 @@ test("keeps production metadata and removes starter artifacts", async () => {
   assert.match(precipitation, /KMA_PROXY_URL/);
   assert.match(precipitation, /KMA_CACHE_URL/);
   assert.match(packageJson, /"name": "kma-regional-precip-dashboard"/);
+  assert.match(styles, /\.region-matrix\s*\{\s*width:\s*100%;\s*min-width:\s*1420px;/);
+  assert.match(styles, /--font-title:\s*32px;/);
+  assert.match(styles, /\.site-header h1\s*\{[^}]*font-weight:\s*800;/);
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
 });

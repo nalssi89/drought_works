@@ -84,10 +84,9 @@ export function adjustStation(input: Readonly<{
   startDayPrecipitation: number;
   endDayNormal: number;
   endDayPrecipitation: number;
-  elapsedHours: number;
 }>): Readonly<{ normal: number; precipitation: number; ratio: number }> {
   const precipitation = round1(Math.max(0, input.basePrecipitation - input.startDayPrecipitation + input.endDayPrecipitation));
-  const normal = round1(Math.max(0, input.baseNormal - input.startDayNormal + input.endDayNormal * input.elapsedHours / 24));
+  const normal = round1(Math.max(0, input.baseNormal - input.startDayNormal + input.endDayNormal));
   return { precipitation, normal, ratio: normal > 0 ? round1(precipitation / normal * 100) : 0 };
 }
 
@@ -97,7 +96,6 @@ export function adjustStations(
   endRain: ReadonlyMap<number, number>,
   startNormals: ReadonlyMap<number, number>,
   endNormals: ReadonlyMap<number, number>,
-  elapsedHours: number,
 ): StationValue[] {
   return base.map((station) => {
     const normalCode = NORMAL_CODE.get(station.code) ?? station.code;
@@ -108,7 +106,6 @@ export function adjustStations(
       endDayNormal: required(endNormals, normalCode, "종료일 평년값"),
       baseNormal: station.normal,
       basePrecipitation: station.precipitation,
-      elapsedHours,
     };
     return { ...station, ...adjustStation(values) };
   });

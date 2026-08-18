@@ -130,11 +130,11 @@ function required(values: ReadonlyMap<number, number>, code: number, label: stri
   return value;
 }
 
-function adjust(base: readonly Station[], startRain: ReadonlyMap<number, number>, endRain: ReadonlyMap<number, number>, startNormal: ReadonlyMap<number, number>, endNormal: ReadonlyMap<number, number>, elapsedHours: number): readonly Station[] {
+function adjust(base: readonly Station[], startRain: ReadonlyMap<number, number>, endRain: ReadonlyMap<number, number>, startNormal: ReadonlyMap<number, number>, endNormal: ReadonlyMap<number, number>): readonly Station[] {
   return base.map((station) => {
     const normalCode = NORMAL_CODE.get(station.code) ?? station.code;
     const precipitation = round1(Math.max(0, station.precipitation - required(startRain, station.code, "start rain") + required(endRain, station.code, "end rain")));
-    const normal = round1(Math.max(0, station.normal - required(startNormal, normalCode, "start normal") + required(endNormal, normalCode, "end normal") * elapsedHours / 24));
+    const normal = round1(Math.max(0, station.normal - required(startNormal, normalCode, "start normal") + required(endNormal, normalCode, "end normal")));
     return { ...station, precipitation, normal, ratio: normal > 0 ? round1(precipitation / normal * 100) : 0 };
   });
 }
@@ -191,7 +191,6 @@ async function updateOfficial(supabase: ReturnType<typeof client>, midnight: str
 async function updateIntraday(supabase: ReturnType<typeof client>, observationTime: string, authKey: string): Promise<void> {
   const effectiveDate = observationTime.slice(0, 10);
   const baseDate = addDays(effectiveDate, -1);
-  const elapsedHours = Number(observationTime.slice(11, 13));
   const { data, error } = await supabase.from("kma_precip_cache").select("cache_key,payload").like("cache_key", "official:%");
   if (error || !data) throw new TypeError("official cache lookup failed");
   const bases = new Map(data.map((row) => [row.cache_key, row.payload]));
@@ -206,7 +205,7 @@ async function updateIntraday(supabase: ReturnType<typeof client>, observationTi
   ]);
   const rows = boundaries.map(({ period, base, boundary }) => ({
     cache_key: `intraday:${period}`, observation_time: observationTime,
-    payload: payload(period, effectiveDate, "intraday", observationTime, adjust(base.stations, boundary.startRain, endRain, boundary.startNormal, endNormal, elapsedHours)),
+    payload: payload(period, effectiveDate, "intraday", observationTime, adjust(base.stations, boundary.startRain, endRain, boundary.startNormal, endNormal)),
     refreshed_at: new Date().toISOString(),
   }));
   const { error: upsertError } = await supabase.from("kma_precip_cache").upsert(rows);

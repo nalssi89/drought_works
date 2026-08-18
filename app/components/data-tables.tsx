@@ -48,13 +48,14 @@ export function AdminTable({ data }: Readonly<{ data: DashboardData }>) {
 }
 
 export function StationTable({ data }: Readonly<{ data: DashboardData }>) {
+  const stations = [...data.stations].sort((left, right) => left.code - right.code);
   return (
     <details className="station-details">
       <summary>66개 대표지점 상세 보기</summary>
       <div className="table-scroll">
         <table className="station-table">
           <thead><tr><th scope="col">지점번호</th><th scope="col">지점명</th><th scope="col">강수량 (mm)</th><th scope="col">평년값 (mm)</th><th scope="col">평년비 (%)</th></tr></thead>
-          <tbody>{data.stations.map((station) => <tr key={station.code}><td>{station.code}</td><th scope="row">{station.name}</th><td>{format(station.precipitation)}</td><td>{format(station.normal)}</td><td className="ratio-value">{format(station.ratio)}</td></tr>)}</tbody>
+          <tbody>{stations.map((station) => <tr key={station.code}><td>{station.code}</td><th scope="row">{station.name}</th><td>{format(station.precipitation)}</td><td>{format(station.normal)}</td><td className="ratio-value">{format(station.ratio)}</td></tr>)}</tbody>
         </table>
       </div>
     </details>
