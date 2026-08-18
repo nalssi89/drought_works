@@ -120,15 +120,7 @@ export async function loadDashboard(requestedDate: string | null, period: Period
 
 async function loadOne(requestedDate: string, period: Period): Promise<DashboardResult> {
   try {
-    const response = await ky.post("https://hydro.kma.go.kr/drought/analysisAccData.do", {
-      body: new URLSearchParams({ PERIOD: period, search_date: requestedDate.replaceAll("-", "") }),
-      headers: {
-        Referer: "https://hydro.kma.go.kr/index.do",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      retry: { limit: 2, methods: ["post"] },
-      timeout: 15_000,
-    }).json<unknown>();
+    const response = await fetchOfficialPayload(requestedDate, period);
     const payload = payloadSchema.parse(response);
     if (payload.list1.length === 0 && payload.list2.length === 0) return { kind: "missing", requestedDate };
     if (payload.list1.length !== 12 || payload.list2.length !== 66 || payload.list_admin.length !== 4 || !payload.search_period || !payload.search_date_db) {
@@ -159,6 +151,32 @@ async function loadOne(requestedDate: string, period: Period): Promise<Dashboard
     }
     throw error;
   }
+}
+
+async function fetchOfficialPayload(requestedDate: string, period: Period): Promise<unknown> {
+  const proxyUrl = process.env.KMA_PROXY_URL;
+  const proxyKey = process.env.KMA_PROXY_ANON_KEY;
+  if (proxyUrl && proxyKey) {
+    return ky.get(proxyUrl, {
+      searchParams: { date: requestedDate, period },
+      headers: {
+        apikey: proxyKey,
+        Authorization: `Bearer ${proxyKey}`,
+      },
+      retry: { limit: 2, methods: ["get"] },
+      timeout: 20_000,
+    }).json<unknown>();
+  }
+
+  return ky.post("https://hydro.kma.go.kr/drought/analysisAccData.do", {
+    body: new URLSearchParams({ PERIOD: period, search_date: requestedDate.replaceAll("-", "") }),
+    headers: {
+      Referer: "https://hydro.kma.go.kr/index.do",
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    retry: { limit: 2, methods: ["post"] },
+    timeout: 15_000,
+  }).json<unknown>();
 }
 
 function toAggregate(row: z.infer<typeof aggregateSchema>): Aggregate {

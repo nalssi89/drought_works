@@ -22,4 +22,4 @@ npm run lint
 npx tsc --noEmit
 ```
 
-배포 설정은 `.openai/hosting.json`에 있으며, 별도 로컬 서버나 데이터베이스가 필요하지 않습니다.
+배포 설정은 `.openai/hosting.json`에 있습니다. 운영 환경에서는 서울 리전의 서버리스 프록시를 통해 기상청 원자료를 읽으므로 별도 로컬 서버가 필요하지 않습니다.

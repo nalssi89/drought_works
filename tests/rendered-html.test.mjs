@@ -40,6 +40,7 @@ test("keeps production metadata and removes starter artifacts", async () => {
   assert.match(layout, /generateMetadata/);
   assert.match(layout, /\/og\.png/);
   assert.match(page, /loadDashboard/);
+  assert.match(await readFile(new URL("../app/lib/precipitation.ts", import.meta.url), "utf8"), /KMA_PROXY_URL/);
   assert.match(packageJson, /"name": "kma-regional-precip-dashboard"/);
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
 });
