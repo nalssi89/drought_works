@@ -33,7 +33,7 @@ export function Controls({ date, period, intraday, observationTime, maximumObser
     <section className="control-panel" aria-label="조회 조건">
       <div className="date-form">
         <label htmlFor="date">날짜</label>
-        <input id="date" name="date" type="date" value={date} onChange={(event) => {
+        <input id="date" name="date" type="date" value={date} onInput={(event) => {
           const nextDate = event.currentTarget.value;
           navigate(nextDate, period, `${nextDate}T${observationTime.slice(11)}`);
         }} />
@@ -51,7 +51,7 @@ export function Controls({ date, period, intraday, observationTime, maximumObser
         ))}
       </nav>
       <div className="intraday-controls">
-        <label className="check-control">
+          <label className="check-control">
           <input type="checkbox" checked={intraday} onChange={(event) => {
             const href = event.currentTarget.checked ? `/?period=${period}&intraday=1` : `/?date=${date}&period=${period}`;
             startTransition(() => router.push(href));
@@ -61,7 +61,7 @@ export function Controls({ date, period, intraday, observationTime, maximumObser
         {intraday ? (
           <label className="time-control" htmlFor="observation-time">
             관측시각
-            <input id="observation-time" type="datetime-local" min="1973-01-01T01:00" max={maximumObservationTime} step="3600" value={observationTime} onChange={(event) => {
+            <input id="observation-time" type="datetime-local" min="1973-01-01T01:00" max={maximumObservationTime} step="3600" value={observationTime} onInput={(event) => {
               const nextTime = event.currentTarget.value;
               if (nextTime) navigate(nextTime.slice(0, 10), period, nextTime);
             }} />
