@@ -13,7 +13,7 @@ export type AggregateValue = Readonly<{
   normal: number;
   precipitation: number;
   ratio: number;
-  rank: null;
+  rank: number | null;
 }>;
 
 const MONTHS: Record<RollingPeriod, number> = { "1m": 1, "3m": 3, "6m": 6, "12m": 12 };
@@ -128,6 +128,14 @@ export function aggregateStations(stations: readonly StationValue[]): Readonly<{
     national,
   ].map((codes, index) => aggregate(String(index + 1).padStart(2, "0"), codes, stations));
   return { regions, admins };
+}
+
+export function mergeAggregateRanks(
+  current: readonly AggregateValue[],
+  official: readonly AggregateValue[],
+): AggregateValue[] {
+  const ranks = new Map(official.map((row) => [row.code, row.rank]));
+  return current.map((row) => ({ ...row, rank: ranks.get(row.code) ?? null }));
 }
 
 function aggregate(code: string, codes: readonly number[], stations: readonly StationValue[]): AggregateValue {

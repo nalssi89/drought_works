@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   adjustStation,
   latestObservationTime,
+  mergeAggregateRanks,
   parseDailyNormals,
   parseHourlyDailyRain,
   periodStart,
@@ -72,4 +73,13 @@ test("refreshes at minute 10 of the next applicable hour", () => {
 test("offers the new hour from minute 10 KST", () => {
   assert.equal(latestObservationTime(new Date("2026-08-17T16:09:00Z")), "2026-08-17T23:00");
   assert.equal(latestObservationTime(new Date("2026-08-17T16:10:00Z")), "2026-08-18T01:00");
+});
+
+test("keeps intraday totals while carrying the latest official ranks", () => {
+  const current = [{ code: "01", normal: 905.1, precipitation: 650.4, ratio: 71.9, rank: null }] as const;
+  const official = [{ code: "01", normal: 899.5, precipitation: 641.6, ratio: 71.4, rank: 9 }] as const;
+
+  const merged = mergeAggregateRanks(current, official);
+
+  assert.deepEqual(merged, [{ code: "01", normal: 905.1, precipitation: 650.4, ratio: 71.9, rank: 9 }]);
 });

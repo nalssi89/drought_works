@@ -5,6 +5,7 @@ import {
   adjustStations,
   aggregateStations,
   latestObservationTime,
+  mergeAggregateRanks,
   parseObservationTime,
   periodStart,
 } from "./intraday";
@@ -178,8 +179,8 @@ async function loadCachedDashboard(period: Period, mode: "official" | "intraday"
     if (cached.period !== period || cached.mode !== mode) throw new TypeError("예약 갱신 자료의 조회 조건이 다릅니다.");
     const stations = cached.stations.map((station) => ({ ...station }));
     const calculated = aggregateStations(stations);
-    const regions = mode === "official" && cached.regions.length === 12 ? cached.regions : calculated.regions;
-    const admins = mode === "official" && cached.admins.length === 4 ? cached.admins : calculated.admins;
+    const regions = mode === "official" && cached.regions.length === 12 ? cached.regions : mergeAggregateRanks(calculated.regions, cached.regions);
+    const admins = mode === "official" && cached.admins.length === 4 ? cached.admins : mergeAggregateRanks(calculated.admins, cached.admins);
     const startDate = periodStart(cached.effectiveDate, period);
     const elapsedHours = cached.observationTime ? Number(cached.observationTime.slice(11, 13)) : 24;
     return {
@@ -261,7 +262,9 @@ async function loadIntradayDashboard(observationTime: string, period: Period): P
       fetchDailyNormals(effectiveDate),
     ]);
     const stations = adjustStations(base.data.stations, startRain, endRain, startNormals, endNormals);
-    const { regions, admins } = aggregateStations(stations);
+    const calculated = aggregateStations(stations);
+    const regions = mergeAggregateRanks(calculated.regions, base.data.regions);
+    const admins = mergeAggregateRanks(calculated.admins, base.data.admins);
     return {
       kind: "ok",
       data: {

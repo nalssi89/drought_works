@@ -143,13 +143,18 @@ function round1(value: number): number {
   return Math.round((value + Number.EPSILON) * 10) / 10;
 }
 
+function cachedAggregate(item: unknown): Aggregate {
+  if (!isRecord(item) || typeof item.code !== "string" || typeof item.normal !== "number" || typeof item.precipitation !== "number" || typeof item.ratio !== "number" || (item.rank !== null && (typeof item.rank !== "number" || !Number.isInteger(item.rank) || item.rank <= 0))) throw new TypeError("invalid cached aggregate");
+  return { code: item.code, normal: item.normal, precipitation: item.precipitation, ratio: item.ratio, rank: item.rank };
+}
+
 function parseCache(value: unknown, period: Period, effectiveDate: string): CachePayload {
-  if (!isRecord(value) || value.schemaVersion !== 2 || value.period !== period || value.mode !== "official" || value.effectiveDate !== effectiveDate || !Array.isArray(value.stations) || value.stations.length !== 66 || typeof value.fetchedAt !== "string") throw new TypeError(`official cache missing for ${period}`);
+  if (!isRecord(value) || value.schemaVersion !== 2 || value.period !== period || value.mode !== "official" || value.effectiveDate !== effectiveDate || !Array.isArray(value.stations) || value.stations.length !== 66 || !Array.isArray(value.regions) || value.regions.length !== 12 || !Array.isArray(value.admins) || value.admins.length !== 4 || typeof value.fetchedAt !== "string") throw new TypeError(`official cache missing for ${period}`);
   const stations = value.stations.map((item) => {
     if (!isRecord(item) || typeof item.code !== "number" || typeof item.name !== "string" || typeof item.normal !== "number" || typeof item.precipitation !== "number" || typeof item.ratio !== "number") throw new TypeError("invalid cached station");
     return { code: item.code, name: item.name, normal: item.normal, precipitation: item.precipitation, ratio: item.ratio };
   });
-  return { schemaVersion: 2, period, effectiveDate, mode: "official", observationTime: null, stations, regions: [], admins: [], fetchedAt: value.fetchedAt };
+  return { schemaVersion: 2, period, effectiveDate, mode: "official", observationTime: null, stations, regions: value.regions.map(cachedAggregate), admins: value.admins.map(cachedAggregate), fetchedAt: value.fetchedAt };
 }
 
 function payload(period: Period, effectiveDate: string, mode: Mode, observationTime: string | null, stations: readonly Station[], regions: readonly Aggregate[] = [], admins: readonly Aggregate[] = []): CachePayload {
@@ -205,7 +210,7 @@ async function updateIntraday(supabase: ReturnType<typeof client>, observationTi
   ]);
   const rows = boundaries.map(({ period, base, boundary }) => ({
     cache_key: `intraday:${period}`, observation_time: observationTime,
-    payload: payload(period, effectiveDate, "intraday", observationTime, adjust(base.stations, boundary.startRain, endRain, boundary.startNormal, endNormal)),
+    payload: payload(period, effectiveDate, "intraday", observationTime, adjust(base.stations, boundary.startRain, endRain, boundary.startNormal, endNormal), base.regions, base.admins),
     refreshed_at: new Date().toISOString(),
   }));
   const { error: upsertError } = await supabase.from("kma_precip_cache").upsert(rows);
