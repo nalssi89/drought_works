@@ -10,6 +10,7 @@ import {
   periodStart,
 } from "../app/lib/intraday.ts";
 import { millisecondsUntilNextHourlyRefresh } from "../app/lib/refresh.ts";
+import { OfficialDataUnavailableError, refreshOfficial } from "../supabase/functions/kma-hourly-cache/official-refresh.ts";
 
 test("moves the rolling window start to D+1", () => {
   assert.equal(periodStart("2026-08-18", "1m"), "2026-07-19");
@@ -82,4 +83,12 @@ test("keeps intraday totals while carrying the latest official ranks", () => {
   const merged = mergeAggregateRanks(current, official);
 
   assert.deepEqual(merged, [{ code: "01", normal: 905.1, precipitation: 650.4, ratio: 71.9, rank: 9 }]);
+});
+
+test("defers an official refresh when KMA daily aggregates are not ready", async () => {
+  const result = await refreshOfficial(async () => {
+    throw new OfficialDataUnavailableError();
+  });
+
+  assert.equal(result, "deferred");
 });

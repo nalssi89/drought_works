@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { createClient } from "@supabase/supabase-js";
 import ky from "ky";
+import { OfficialDataUnavailableError, refreshOfficial } from "./official-refresh.ts";
 
 const PERIODS = ["1m", "3m", "6m", "12m"] as const;
 const MONTHS = { "1m": 1, "3m": 3, "6m": 6, "12m": 12 } as const;
@@ -116,7 +117,7 @@ async function officialData(date: string, period: Period): Promise<Readonly<{ st
     headers: { Accept: "application/json, text/javascript, */*; q=0.01", Origin: "https://hydro.kma.go.kr", Referer: "https://hydro.kma.go.kr/index.do", "User-Agent": "Mozilla/5.0 (compatible; KMA-Precipitation-Dashboard/1.0)", "X-Requested-With": "XMLHttpRequest" },
     retry: { limit: 2, methods: ["post"] }, timeout: 20_000,
   }).json<unknown>();
-  if (!isRecord(value) || !Array.isArray(value.list2) || value.list2.length !== 66 || !Array.isArray(value.list1) || value.list1.length !== 12 || !Array.isArray(value.list_admin) || value.list_admin.length !== 4) throw new TypeError("official daily base is unavailable");
+  if (!isRecord(value) || !Array.isArray(value.list2) || value.list2.length !== 66 || !Array.isArray(value.list1) || value.list1.length !== 12 || !Array.isArray(value.list_admin) || value.list_admin.length !== 4) throw new OfficialDataUnavailableError();
   const stations = value.list2.map((item) => {
     if (!isRecord(item) || typeof item.stn_cd !== "number" || typeof item.stn_nm !== "string") throw new TypeError("invalid official station");
     return { code: item.stn_cd, name: item.stn_nm, normal: numeric(item.ny_prcp), precipitation: numeric(item.rn_total), ratio: numeric(item.rn_ratio_sort) };
@@ -236,11 +237,18 @@ Deno.serve(async (request: Request) => {
     const observationTime = kstHour();
     const hour = Number(observationTime.slice(11, 13));
     const forceOfficial = new URL(request.url).searchParams.get("refresh") === "official";
-    if (hour === 0 || forceOfficial) await updateOfficial(supabase, `${observationTime.slice(0, 10)}T00:00`);
+    const midnight = `${observationTime.slice(0, 10)}T00:00`;
+    if (hour === 0 || forceOfficial) {
+      const result = await refreshOfficial(() => updateOfficial(supabase, midnight));
+      if (result === "deferred") return Response.json({ status: "deferred", reason: "official data not ready", observationTime }, { status: 202 });
+    }
     else {
       const expectedBaseDate = addDays(observationTime.slice(0, 10), -1);
       const { data } = await supabase.from("kma_precip_cache").select("payload").eq("cache_key", "official:6m").maybeSingle();
-      if (!data || !isRecord(data.payload) || data.payload.effectiveDate !== expectedBaseDate) await updateOfficial(supabase, `${observationTime.slice(0, 10)}T00:00`);
+      if (!data || !isRecord(data.payload) || data.payload.effectiveDate !== expectedBaseDate) {
+        const result = await refreshOfficial(() => updateOfficial(supabase, midnight));
+        if (result === "deferred") return Response.json({ status: "deferred", reason: "official data not ready", observationTime }, { status: 202 });
+      }
       await updateIntraday(supabase, observationTime, authKey);
     }
     return Response.json({ status: "updated", mode: hour === 0 || forceOfficial ? "official" : "intraday", observationTime });
