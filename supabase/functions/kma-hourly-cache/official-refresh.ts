@@ -5,12 +5,22 @@ export class OfficialDataUnavailableError extends Error {
   }
 }
 
-export async function refreshOfficial(update: () => Promise<void>): Promise<"updated" | "deferred"> {
+export async function refreshOfficial(
+  update: () => Promise<void>,
+  fallback?: () => Promise<void>,
+): Promise<"updated" | "deferred"> {
   try {
     await update();
     return "updated";
   } catch (error) {
-    if (error instanceof OfficialDataUnavailableError) return "deferred";
-    throw error;
+    if (!(error instanceof OfficialDataUnavailableError)) throw error;
+    if (!fallback) return "deferred";
+    try {
+      await fallback();
+      return "updated";
+    } catch (fallbackError) {
+      if (fallbackError instanceof OfficialDataUnavailableError) return "deferred";
+      throw fallbackError;
+    }
   }
 }

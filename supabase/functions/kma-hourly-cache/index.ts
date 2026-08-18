@@ -2,6 +2,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { createClient } from "@supabase/supabase-js";
 import ky from "ky";
+import { finalizeOfficialStations, parseCachePayload, parseOfficialDailyRain } from "./daily-rollover.ts";
+import type { AggregateValue as Aggregate, CachePayload, Mode, StationValue as Station } from "./daily-rollover.ts";
 import { OfficialDataUnavailableError, refreshOfficial } from "./official-refresh.ts";
 
 const PERIODS = ["1m", "3m", "6m", "12m"] as const;
@@ -14,15 +16,7 @@ const KST_FORMATTER = new Intl.DateTimeFormat("en-CA", {
 });
 
 type Period = typeof PERIODS[number];
-type Mode = "official" | "intraday";
 type JsonRecord = Record<string, unknown>;
-type Station = Readonly<{ code: number; name: string; normal: number; precipitation: number; ratio: number }>;
-type Aggregate = Readonly<{ code: string; normal: number; precipitation: number; ratio: number; rank: number | null }>;
-type CachePayload = Readonly<{
-  schemaVersion: 2; period: Period; effectiveDate: string; mode: Mode;
-  observationTime: string | null; stations: readonly Station[];
-  regions: readonly Aggregate[]; admins: readonly Aggregate[]; fetchedAt: string;
-}>;
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -144,22 +138,8 @@ function round1(value: number): number {
   return Math.round((value + Number.EPSILON) * 10) / 10;
 }
 
-function cachedAggregate(item: unknown): Aggregate {
-  if (!isRecord(item) || typeof item.code !== "string" || typeof item.normal !== "number" || typeof item.precipitation !== "number" || typeof item.ratio !== "number" || (item.rank !== null && (typeof item.rank !== "number" || !Number.isInteger(item.rank) || item.rank <= 0))) throw new TypeError("invalid cached aggregate");
-  return { code: item.code, normal: item.normal, precipitation: item.precipitation, ratio: item.ratio, rank: item.rank };
-}
-
-function parseCache(value: unknown, period: Period, effectiveDate: string): CachePayload {
-  if (!isRecord(value) || value.schemaVersion !== 2 || value.period !== period || value.mode !== "official" || value.effectiveDate !== effectiveDate || !Array.isArray(value.stations) || value.stations.length !== 66 || !Array.isArray(value.regions) || value.regions.length !== 12 || !Array.isArray(value.admins) || value.admins.length !== 4 || typeof value.fetchedAt !== "string") throw new TypeError(`official cache missing for ${period}`);
-  const stations = value.stations.map((item) => {
-    if (!isRecord(item) || typeof item.code !== "number" || typeof item.name !== "string" || typeof item.normal !== "number" || typeof item.precipitation !== "number" || typeof item.ratio !== "number") throw new TypeError("invalid cached station");
-    return { code: item.code, name: item.name, normal: item.normal, precipitation: item.precipitation, ratio: item.ratio };
-  });
-  return { schemaVersion: 2, period, effectiveDate, mode: "official", observationTime: null, stations, regions: value.regions.map(cachedAggregate), admins: value.admins.map(cachedAggregate), fetchedAt: value.fetchedAt };
-}
-
 function payload(period: Period, effectiveDate: string, mode: Mode, observationTime: string | null, stations: readonly Station[], regions: readonly Aggregate[] = [], admins: readonly Aggregate[] = []): CachePayload {
-  return { schemaVersion: 2, period, effectiveDate, mode, observationTime, stations, regions, admins, fetchedAt: new Date().toISOString() };
+  return { schemaVersion: 2, period, effectiveDate, mode, observationTime, stations, regions, admins, fetchedAt: new Date().toISOString(), source: mode === "official" ? "hydro" : "intraday" };
 }
 
 function client() {
@@ -194,6 +174,33 @@ async function updateOfficial(supabase: ReturnType<typeof client>, midnight: str
   if (error) throw new TypeError("official cache update failed");
 }
 
+async function updateOfficialFromDaily(supabase: ReturnType<typeof client>, midnight: string, authKey: string): Promise<void> {
+  const effectiveDate = addDays(midnight.slice(0, 10), -1);
+  const observationTime = `${effectiveDate}T23:00`;
+  const [cache, hourlyTextValue, dailyTextValue] = await Promise.all([
+    supabase.from("kma_precip_cache").select("cache_key,payload").like("cache_key", "intraday:%"),
+    hourlyText(observationTime, authKey),
+    apiText("kma_sfcdd.php", { tm: effectiveDate.replaceAll("-", ""), stn: "0", disp: "0", help: "0" }, authKey),
+  ]);
+  if (cache.error || !cache.data) throw new TypeError("intraday cache lookup failed");
+  if (cache.data.length !== PERIODS.length) throw new OfficialDataUnavailableError();
+  const bases = new Map(cache.data.map((row) => [row.cache_key, row.payload]));
+  const hourlyRain = parseHourly(hourlyTextValue, observationTime);
+  const dailyRain = parseOfficialDailyRain(dailyTextValue, effectiveDate);
+  const rows = PERIODS.map((period) => {
+    const base = parseCachePayload(bases.get(`intraday:${period}`), { period, effectiveDate, mode: "intraday" });
+    const finalized = finalizeOfficialStations({ ...base, hourlyRain, dailyRain });
+    return {
+      cache_key: `official:${period}`,
+      observation_time: midnight,
+      payload: { ...payload(period, effectiveDate, "official", null, finalized.stations, finalized.regions, finalized.admins), source: "daily" },
+      refreshed_at: new Date().toISOString(),
+    };
+  });
+  const { error } = await supabase.from("kma_precip_cache").upsert(rows);
+  if (error) throw new TypeError("daily official cache update failed");
+}
+
 async function updateIntraday(supabase: ReturnType<typeof client>, observationTime: string, authKey: string): Promise<void> {
   const effectiveDate = observationTime.slice(0, 10);
   const baseDate = addDays(effectiveDate, -1);
@@ -204,7 +211,7 @@ async function updateIntraday(supabase: ReturnType<typeof client>, observationTi
     hourlyText(observationTime, authKey).then((text) => parseHourly(text, observationTime)),
     apiText("sfc_norm1.php", normalParams(effectiveDate), authKey).then(parseNormals),
     Promise.all(PERIODS.map(async (period) => {
-      const base = parseCache(bases.get(`official:${period}`), period, baseDate);
+      const base = parseCachePayload(bases.get(`official:${period}`), { period, effectiveDate: baseDate, mode: "official" });
       const boundary = await boundaryData(period, effectiveDate, authKey);
       return { period, base, boundary };
     })),
@@ -239,16 +246,23 @@ Deno.serve(async (request: Request) => {
     const forceOfficial = new URL(request.url).searchParams.get("refresh") === "official";
     const midnight = `${observationTime.slice(0, 10)}T00:00`;
     if (hour === 0 || forceOfficial) {
-      const result = await refreshOfficial(() => updateOfficial(supabase, midnight));
+      const result = await refreshOfficial(
+        () => updateOfficial(supabase, midnight),
+        () => updateOfficialFromDaily(supabase, midnight, authKey),
+      );
       if (result === "deferred") return Response.json({ status: "deferred", reason: "official data not ready", observationTime }, { status: 202 });
     }
     else {
       const expectedBaseDate = addDays(observationTime.slice(0, 10), -1);
       const { data } = await supabase.from("kma_precip_cache").select("payload").eq("cache_key", "official:6m").maybeSingle();
       if (!data || !isRecord(data.payload) || data.payload.effectiveDate !== expectedBaseDate) {
-        const result = await refreshOfficial(() => updateOfficial(supabase, midnight));
+        const result = await refreshOfficial(
+          () => updateOfficial(supabase, midnight),
+          () => updateOfficialFromDaily(supabase, midnight, authKey),
+        );
         if (result === "deferred") return Response.json({ status: "deferred", reason: "official data not ready", observationTime }, { status: 202 });
       }
+      else if (data.payload.source === "daily") await refreshOfficial(() => updateOfficial(supabase, midnight));
       await updateIntraday(supabase, observationTime, authKey);
     }
     return Response.json({ status: "updated", mode: hour === 0 || forceOfficial ? "official" : "intraday", observationTime });

@@ -11,6 +11,12 @@ import {
 } from "../app/lib/intraday.ts";
 import { millisecondsUntilNextHourlyRefresh } from "../app/lib/refresh.ts";
 import { OfficialDataUnavailableError, refreshOfficial } from "../supabase/functions/kma-hourly-cache/official-refresh.ts";
+import {
+  REPRESENTATIVE_STATIONS,
+  aggregateOfficialStations,
+  finalizeOfficialStations,
+  parseOfficialDailyRain,
+} from "../supabase/functions/kma-hourly-cache/daily-rollover.ts";
 
 test("moves the rolling window start to D+1", () => {
   assert.equal(periodStart("2026-08-18", "1m"), "2026-07-19");
@@ -91,4 +97,55 @@ test("defers an official refresh when KMA daily aggregates are not ready", async
   });
 
   assert.equal(result, "deferred");
+});
+
+test("uses the ASOS daily fallback when KMA regional aggregates are not ready", async () => {
+  let fallbackRuns = 0;
+
+  const result = await refreshOfficial(
+    async () => {
+      throw new OfficialDataUnavailableError();
+    },
+    async () => {
+      fallbackRuns += 1;
+    },
+  );
+
+  assert.equal(result, "updated");
+  assert.equal(fallbackRuns, 1);
+});
+
+test("reads final RN_DAY from the KMA ASOS daily response", () => {
+  const rows = Array.from({ length: 60 }, (_, index) => {
+    const fields = Array.from({ length: 56 }, () => "-9");
+    fields[0] = "20260818";
+    fields[1] = String(90 + index);
+    fields[38] = index === 18 ? "12.4" : "-9.0";
+    return fields.join(" ");
+  }).join("\n");
+
+  const rain = parseOfficialDailyRain(rows, "2026-08-18");
+
+  assert.equal(rain.get(90), 0);
+  assert.equal(rain.get(108), 12.4);
+});
+
+test("finalizes the official day and carries the last published ranks", () => {
+  const stations = REPRESENTATIVE_STATIONS.map((code) => ({ code, name: String(code), normal: 100, precipitation: 50, ratio: 50 }));
+  const hourlyRain = new Map(REPRESENTATIVE_STATIONS.map((code) => [code, 0]));
+  const dailyRain = new Map(hourlyRain);
+  dailyRain.set(108, 6);
+  const aggregates = aggregateOfficialStations(stations);
+
+  const result = finalizeOfficialStations({
+    stations,
+    hourlyRain,
+    dailyRain,
+    regions: aggregates.regions.map((row) => ({ ...row, rank: 7 })),
+    admins: aggregates.admins.map((row) => ({ ...row, rank: 8 })),
+  });
+
+  assert.equal(result.stations.find((row) => row.code === 108)?.precipitation, 56);
+  assert.deepEqual(result.regions[0], { code: "01", normal: 100, precipitation: 51, ratio: 51, rank: 7 });
+  assert.equal(result.admins[0]?.rank, 8);
 });
