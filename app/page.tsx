@@ -39,7 +39,7 @@ export default async function Home({ searchParams }: PageProps) {
         <h1>권역별 누적강수 현황</h1>
       </header>
       <Controls date={data.effectiveDate} period={data.period} intraday={data.mode === "intraday"} observationTime={data.observationTime ?? `${data.effectiveDate}T18:00`} maximumObservationTime={maximumObservationTime} liveLatest={useCachedLatest} />
-      {data.mode === "intraday" ? <p className="estimate-notice" role="note"><strong>추정 산출:</strong> 선택 시각의 공식 RN_DAY 일누적을 반영하고, 평년값은 종료일 하루의 일평년값 전체를 적용해 시간과 관계없이 동일합니다. 시간별 순위는 제공되지 않습니다.</p> : null}
+      {data.mode === "intraday" ? <p className="estimate-notice" role="note"><strong>추정 산출:</strong> 선택 시각의 공식 RN_DAY 일누적을 반영하고, 평년값은 종료일 하루의 일평년값 전체를 적용해 시간과 관계없이 동일합니다. 최저순위는 직전 완료된 공식 일자료 기준입니다.</p> : null}
       <section className="data-section">
         <div className="section-title">
           <h2>{data.searchPeriod}</h2>
