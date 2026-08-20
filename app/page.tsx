@@ -1,6 +1,7 @@
 import { AutoRefresh } from "./components/auto-refresh";
 import { Controls } from "./components/controls";
 import { AdminTable, RegionTable, StationTable } from "./components/data-tables";
+import { Freshness } from "./components/freshness";
 import { latestObservationTime, loadDashboard, parseDate, parseObservationTime, periodSchema } from "./lib/precipitation";
 
 type PageProps = Readonly<{ searchParams: Promise<Record<string, string | readonly string[] | undefined>> }>;
@@ -15,7 +16,30 @@ export default async function Home({ searchParams }: PageProps) {
   const period = periodResult.success ? periodResult.data : "6m";
   const intraday = first(params.intraday) === "1";
   const maximumObservationTime = latestObservationTime();
-  const explicitObservationTime = parseObservationTime(first(params.time));
+  const rawObservationTime = first(params.time);
+  const explicitObservationTime = parseObservationTime(rawObservationTime);
+  const invalidDate = dateValue !== undefined && requestedDate === null;
+  const invalidObservationTime = intraday && rawObservationTime !== undefined && explicitObservationTime === null;
+  if (invalidDate || invalidObservationTime) {
+    return (
+      <main className="site-shell">
+        <header className="site-header">
+          <h1>권역별 누적강수 현황</h1>
+          <div className="freshness" aria-live="polite">
+            <strong>조회 조건 오류</strong>
+            {dateValue ? <span>입력 기준일 {dateValue}</span> : null}
+            {rawObservationTime ? <span>입력 관측시각 {rawObservationTime}</span> : null}
+            <span>조회자료 갱신 대기</span>
+          </div>
+        </header>
+        <section className="error-panel" role="alert">
+          <h2>조회 조건을 확인해 주세요</h2>
+          <p>{invalidDate ? "날짜는 1973년 이후 오늘까지의 실제 날짜만 사용할 수 있습니다." : "관측시각은 KST 기준 01시부터 최신 관측시각까지의 정시만 사용할 수 있습니다."}</p>
+          <a href={`/?period=${period}`}>최신 완료일로 돌아가기</a>
+        </section>
+      </main>
+    );
+  }
   const observationTime = intraday ? (explicitObservationTime ?? maximumObservationTime) : null;
   const useCachedLatest = !dateValue && (!intraday || !explicitObservationTime);
   const result = await loadDashboard(requestedDate, period, observationTime, useCachedLatest);
@@ -24,7 +48,15 @@ export default async function Home({ searchParams }: PageProps) {
     const date = requestedDate ?? "";
     return (
       <main className="site-shell">
-        <header className="site-header"><h1>권역별 누적강수 현황</h1></header>
+        <header className="site-header">
+          <h1>권역별 누적강수 현황</h1>
+          <div className="freshness" aria-live="polite">
+            <strong>{intraday ? "당일 시간자료 추정" : "기상청 공식자료 조회"}</strong>
+            {date ? <span>기준일 {date}</span> : null}
+            {intraday && observationTime ? <span>관측시각 {observationTime.replace("T", " ")}</span> : null}
+            <span>조회자료 갱신 대기</span>
+          </div>
+        </header>
         {date ? <Controls date={date} period={period} intraday={intraday} observationTime={observationTime ?? `${date}T18:00`} maximumObservationTime={maximumObservationTime} liveLatest={false} /> : null}
         <section className="error-panel" role="alert"><h2>자료를 표시할 수 없습니다</h2><p>{result.kind === "missing" ? `${result.requestedDate} 기준 공식 자료가 없습니다.` : result.message}</p><a href={`/?period=${period}`}>최신 완료일로 돌아가기</a></section>
       </main>
@@ -34,9 +66,10 @@ export default async function Home({ searchParams }: PageProps) {
   const { data } = result;
   return (
     <main className="site-shell">
-      <AutoRefresh />
+      <AutoRefresh enabled={useCachedLatest} />
       <header className="site-header">
         <h1>권역별 누적강수 현황</h1>
+        <Freshness data={data} />
       </header>
       <Controls date={data.effectiveDate} period={data.period} intraday={data.mode === "intraday"} observationTime={data.observationTime ?? `${data.effectiveDate}T18:00`} maximumObservationTime={maximumObservationTime} liveLatest={useCachedLatest} />
       {data.mode === "intraday" ? <p className="estimate-notice" role="note"><strong>추정 산출:</strong> 선택 시각의 공식 RN_DAY 일누적을 반영하고, 평년값은 종료일 하루의 일평년값 전체를 적용해 시간과 관계없이 동일합니다. 최저순위는 직전 완료된 공식 일자료 기준입니다.</p> : null}

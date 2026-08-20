@@ -36,25 +36,25 @@ export function Controls({ date, period, intraday, observationTime, maximumObser
         <label htmlFor="date">날짜</label>
         <input id="date" name="date" type="date" value={date} onInput={(event) => {
           const nextDate = event.currentTarget.value;
-          navigate(nextDate, period, `${nextDate}T${observationTime.slice(11)}`);
+          if (nextDate) navigate(nextDate, period, `${nextDate}T${observationTime.slice(11)}`);
         }} />
         {pending ? <span className="update-status" aria-live="polite">자료 갱신 중…</span> : null}
       </div>
       <nav className="date-moves" aria-label="날짜 빠른 이동">
-        {moves.slice(0, 4).map(([label, value]) => <Link href={query(value, period, intraday, intraday ? `${value}T${observationTime.slice(11)}` : null)} key={label}>{label}</Link>)}
-        <Link className="now-link" href={intraday ? `/?period=${period}&intraday=1` : `/?period=${period}`}>NOW</Link>
-        {moves.slice(4).map(([label, value]) => <Link href={query(value, period, intraday, intraday ? `${value}T${observationTime.slice(11)}` : null)} key={label}>{label}</Link>)}
+        {moves.slice(0, 4).map(([label, value]) => <Link prefetch={false} href={query(value, period, intraday, intraday ? `${value}T${observationTime.slice(11)}` : null)} key={label}>{label}</Link>)}
+        <Link prefetch={false} className="now-link" href={intraday ? `/?period=${period}&intraday=1` : `/?period=${period}`}>NOW</Link>
+        {moves.slice(4).map(([label, value]) => <Link prefetch={false} href={query(value, period, intraday, intraday ? `${value}T${observationTime.slice(11)}` : null)} key={label}>{label}</Link>)}
       </nav>
       <nav className="periods" aria-label="누적기간">
         <span>누적기간</span>
         {PERIOD_OPTIONS.map(([value, label]) => (
-          <Link className={value === period ? "period-button selected" : "period-button"} href={liveLatest ? `/?period=${value}${intraday ? "&intraday=1" : ""}` : query(date, value, intraday, intraday ? observationTime : null)} key={value} aria-current={value === period ? "page" : undefined}>{label}</Link>
+          <Link prefetch={false} className={value === period ? "period-button selected" : "period-button"} href={liveLatest ? `/?period=${value}${intraday ? "&intraday=1" : ""}` : query(date, value, intraday, intraday ? observationTime : null)} key={value} aria-current={value === period ? "page" : undefined}>{label}</Link>
         ))}
       </nav>
       <div className="intraday-controls">
           <label className="check-control">
           <input type="checkbox" checked={intraday} onChange={(event) => {
-            const href = event.currentTarget.checked ? `/?period=${period}&intraday=1` : `/?date=${date}&period=${period}`;
+            const href = event.currentTarget.checked ? query(date, period, true, observationTime) : query(date, period, false, null);
             startTransition(() => router.push(href));
           }} />
           당일 시간강수 반영(추정)

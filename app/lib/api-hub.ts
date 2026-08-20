@@ -1,6 +1,6 @@
 import ky from "ky";
 
-import { parseDailyNormals, parseHourlyDailyRain } from "./intraday";
+import { parseDailyNormals, parseHourlyDailyRain } from "./intraday.ts";
 
 const API_BASE = "https://apihub.kma.go.kr/api/typ01/url";
 
@@ -10,7 +10,7 @@ export async function fetchHourlyDailyRain(observationTime: string): Promise<Map
     stn: "0",
     help: "0",
   });
-  return parseHourlyDailyRain(text);
+  return parseHourlyDailyRain(text, observationTime);
 }
 
 export async function fetchDailyNormals(date: string): Promise<Map<number, number>> {
@@ -24,7 +24,7 @@ export async function fetchDailyNormals(date: string): Promise<Map<number, numbe
     MM2: String(Number(month)),
     DD2: String(Number(day)),
   });
-  return parseDailyNormals(text);
+  return parseDailyNormals(text, date);
 }
 
 async function request(path: string, searchParams: Record<string, string>): Promise<string> {

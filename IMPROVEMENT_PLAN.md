@@ -4,10 +4,19 @@
 
 ## 현재 검증 상태
 
-- `npm test`: 통과 (단위 테스트 11개, 렌더링 테스트 2개, 빌드 포함)
+- `npm test`: 통과 (단위 테스트 16개, 렌더링 테스트 2개, 빌드 포함)
 - `npm run lint`: 통과
 - `npx tsc --noEmit`: 통과
 - 단, 렌더링 테스트가 외부 기상청 응답에 의존하고 `tsconfig.json`이 Supabase Edge Function을 제외하므로 운영 코드 전체를 검증하지는 않습니다.
+
+## 2026-08-20 적용 현황
+
+- P0 1~3: 당일 추정 경계일, 캐시 신선도·fallback, Edge Secret·cron 인증·lease·최신 관측시각 우선 기록을 적용했습니다.
+- P1 4~7: 날짜·관측시각 보존, strict 입력검증, 완료일 탐색 fallback, live 최신 화면 한정 자동갱신을 적용했습니다.
+- P2 8~9 및 12~17: 지점·권역 계약검증, 정시 timestamp 파싱, Deno CI 검사, Node 버전 고정, Freshness·임계값 셀·origin allowlist·prefetch 설정을 적용했습니다.
+- P2 10: 앱과 Edge Function의 계산 상수는 현재 별도 런타임 경계에 있어 완전한 코드 공유 대신 동일한 대표지점·권역 계약검증과 경계 회귀검사로 보호했습니다.
+- P2 11: 단위·계약 fixture 검사는 추가했지만 서버 렌더링 검사는 아직 KMA 외부 응답을 사용합니다. CI에서는 외부 의존 렌더링 검사를 제외하고, 결정론적 fixture 분리는 후속 과제로 남겼습니다.
+- 이 환경에는 Deno·Supabase CLI·PostgreSQL 클라이언트가 없어 Edge `deno check`와 migration 실DB 적용은 로컬에서 실행하지 못했습니다. `.github/workflows/quality.yml`에 Deno 검사와 앱 필수검사를 추가했습니다.
 
 ## P0 — 데이터 정확성 및 운영 안전성
 

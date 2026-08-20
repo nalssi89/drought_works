@@ -6,7 +6,7 @@
 
 - app/: 날짜·기간·권역·66개 대표지점 조회 화면
 - supabase/functions/kma-hourly-cache/: KMA 시간자료·일자료를 수집하는 Supabase Edge Function
-- supabase/migrations/0001_create_kma_precip_cache.sql: 캐시 테이블 생성 SQL
+- supabase/migrations/: 캐시 테이블·lease·최신자료 우선 기록 SQL
 - templates/가뭄양식.hwpx: 첨부한 가뭄 보고서 기본 양식
 - tests/: 누적기간, 당일 시간강수 추정, 공식 일자료 전환, 화면 출력 검증
 
@@ -29,6 +29,9 @@ Supabase Edge Function ──▶ kma_precip_cache
 - 시간자료 추정값은 당일 관측용이며, 다음날 공식 일자료가 들어오면 공식값으로 교체합니다.
 - 평년값은 당일 시각에 따라 변하지 않고, 누적기간의 날짜 경계에 맞춰 공식 평년값을 조회합니다.
 - 날짜와 기간을 바꾸면 별도 조회 버튼 없이 화면이 갱신됩니다.
+- 공식자료와 당일 추정자료의 기준일·자료원·갱신시각·신선도 상태가 화면에 표시됩니다.
+- 2시간을 넘긴 당일 추정 캐시는 stale로 표시하고 실시간 조회를 시도합니다. 공식 캐시는 36시간을 넘기면 stale로 표시합니다.
+- 평년비 65%·55%·45% 임계값은 표 셀 배경과 범례를 함께 사용합니다.
 
 ## 요구사항
 
@@ -78,9 +81,12 @@ Copy-Item .env.example .env.local
 | 변수 | 용도 | 공개 여부 |
 |---|---|---|
 | KMA_API_AUTH_KEY | 서버 측 KMA APIHub 직접 조회용 인증키 | 절대 공개하지 않음 |
+| CRON_SECRET | 예약 POST 전용 호출 비밀값(32자 이상) | 절대 공개하지 않음 |
 | KMA_CACHE_URL | Supabase Function의 조회 URL | 공개 가능 |
 | KMA_PROXY_ANON_KEY | Supabase anon key | 공개 가능하지만 RLS·Function 설정 필요 |
 | KMA_PROXY_URL | 선택적 공식자료 프록시 URL | 공개 가능 |
+| PUBLIC_SITE_ORIGIN | metadata 기본 origin | 공개 가능 |
+| SITE_ORIGIN_ALLOWLIST | Host 기반 metadata에 허용할 origin 목록 | 공개 가능 |
 
 로컬 확인 명령은 다음과 같습니다.
 
@@ -107,7 +113,7 @@ npm test
    npx supabase db push
    ~~~
 
-2. supabase/migrations/0001_create_kma_precip_cache.sql로 kma_precip_cache 테이블을 만듭니다.
+2. `supabase/migrations/0001_create_kma_precip_cache.sql`과 `0002_cache_safety.sql`을 적용합니다. 두 번째 migration은 예약 실행 lease와 관측시각이 더 최신인 자료만 기록하는 조건부 upsert를 추가합니다.
 
 3. Edge Function을 배포합니다.
 
@@ -121,7 +127,7 @@ npm test
    https://<project-ref>.supabase.co/functions/v1/kma-hourly-cache
    ~~~
 
-5. 홈페이지 런타임에 KMA_CACHE_URL과 KMA_PROXY_ANON_KEY를 설정합니다. 실제 KMA 인증키와 service-role key는 .env.local, Supabase Secret, 호스팅 Secret에만 저장합니다.
+5. Edge Function Secret에 `KMA_API_AUTH_KEY`, `CRON_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`를 설정합니다. 홈페이지 런타임에는 KMA_CACHE_URL과 KMA_PROXY_ANON_KEY를 설정합니다. 실제 KMA 인증키와 service-role key는 .env.local, Supabase Secret, 호스팅 Secret에만 저장합니다.
 
 6. 예약 실행기가 다음 두 종류의 POST를 호출하도록 설정합니다.
 
@@ -130,14 +136,14 @@ npm test
    매일 00:30: 30 0 * * *
    ~~~
 
-   호출 시 Supabase JWT와 KMA 인증키를 헤더로 전달합니다.
+   호출 시 Supabase JWT와 `x-cron-secret`을 전달합니다. KMA API 키는 요청 헤더로 전달하지 않고 Edge Function Secret에서만 읽습니다.
 
    ~~~bash
    curl -X POST \
      "https://<project-ref>.supabase.co/functions/v1/kma-hourly-cache" \
      -H "Authorization: Bearer <supabase-anon-key>" \
      -H "apikey: <supabase-anon-key>" \
-     -H "x-kma-auth: <kma-apihub-auth-key>"
+     -H "x-cron-secret: <cron-secret>"
    ~~~
 
 예약 실행기와 Secret은 저장소에 커밋하지 않습니다. Function의 GET은 ?period=6m&mode=official 또는 ?period=6m&mode=intraday 형태로 캐시를 조회합니다.

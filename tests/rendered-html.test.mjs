@@ -25,6 +25,9 @@ test("server-renders the official six-month regional dashboard", async () => {
   assert.match(html, />1,003\.2</);
   assert.match(html, />82\.3</);
   assert.match(html, /66개 대표지점 상세 보기/);
+  assert.match(html, /기상청 공식 권역자료/);
+  assert.match(html, /조회자료 갱신/);
+  assert.match(html, /ratio-cell--55/);
   assert.match(html, /부산/);
   assert.match(html, /울산/);
   assert.match(html, /창원/);
@@ -46,6 +49,10 @@ test("keeps production metadata, aligned tables, and removes starter artifacts",
   assert.match(layout, /\/og\.png/);
   assert.match(page, /loadDashboard/);
   assert.match(page, /useCachedLatest/);
+  assert.match(page, /Freshness/);
+  const controls = await readFile(new URL("../app/components/controls.tsx", import.meta.url), "utf8");
+  assert.match(controls, /prefetch=\{false\}/);
+  assert.match(controls, /query\(date, period, true, observationTime\)/);
   const precipitation = await readFile(new URL("../app/lib/precipitation.ts", import.meta.url), "utf8");
   assert.match(precipitation, /KMA_PROXY_URL/);
   assert.match(precipitation, /KMA_CACHE_URL/);
@@ -54,5 +61,14 @@ test("keeps production metadata, aligned tables, and removes starter artifacts",
   assert.match(styles, /--font-title:\s*32px;/);
   assert.match(styles, /\.site-header h1\s*\{[^}]*font-weight:\s*800;/);
   assert.match(styles, /@media \(max-width:\s*960px\)[\s\S]*?\.thresholds\s*\{\s*align-self:\s*end;\s*\}/);
+  const edge = await readFile(new URL("../supabase/functions/kma-hourly-cache/index.ts", import.meta.url), "utf8");
+  assert.match(edge, /KMA_API_AUTH_KEY/);
+  assert.doesNotMatch(edge, /x-kma-auth/);
+  assert.match(edge, /try_acquire_kma_cache_lease/);
+  const migration = await readFile(new URL("../supabase/migrations/0002_cache_safety.sql", import.meta.url), "utf8");
+  assert.ok(migration.includes("excluded.observation_time >="));
+  assert.ok(migration.includes("grant all on public.kma_precip_cache to service_role"));
+  const nvmrc = await readFile(new URL("../.nvmrc", import.meta.url), "utf8");
+  assert.equal(nvmrc.trim(), "22.13.0");
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
 });
