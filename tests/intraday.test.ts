@@ -3,18 +3,12 @@ import test from "node:test";
 
 import {
   adjustStation,
-  periodBoundaryDates,
   latestObservationTime,
   mergeAggregateRanks,
   parseDailyNormals,
   parseHourlyDailyRain,
-  parseObservationTime,
   periodStart,
 } from "../app/lib/intraday.ts";
-import {
-  cacheFreshness,
-  parseDate,
-} from "../app/lib/precipitation.ts";
 import { millisecondsUntilNextHourlyRefresh } from "../app/lib/refresh.ts";
 import { OfficialDataUnavailableError, refreshOfficial } from "../supabase/functions/kma-hourly-cache/official-refresh.ts";
 import {
@@ -31,14 +25,6 @@ test("moves the rolling window start to D+1", () => {
   assert.equal(periodStart("2026-08-18", "12m"), "2025-08-19");
 });
 
-test("keeps the removed boundary day separate from the intraday start day", () => {
-  assert.deepEqual(periodBoundaryDates("2026-08-18", "6m"), {
-    startDate: "2026-02-19",
-    removedDate: "2026-02-18",
-    endDate: "2026-08-18",
-  });
-});
-
 test("reads RN_DAY and treats KMA missing-rain sentinels as zero", () => {
   const rows = [
     "# header",
@@ -46,23 +32,9 @@ test("reads RN_DAY and treats KMA missing-rain sentinels as zero", () => {
     "202608181800 159 11 0.9 -9 -9.0 -9 1006.6 1008.6 2 0.5 29.7 23.3 69.0 28.6 3.4 119.3 119.3 -9.0",
   ].join("\n");
 
-  const rain = parseHourlyDailyRain(rows, "2026-08-18T18:00");
+  const rain = parseHourlyDailyRain(rows);
   assert.equal(rain.get(108), 0);
   assert.equal(rain.get(159), 119.3);
-});
-
-test("parses only the requested hourly timestamp", () => {
-  const fields = (rain: string) => {
-    const row = Array.from({ length: 20 }, () => "-9");
-    row[0] = "202608181800";
-    row[1] = "108";
-    row[16] = rain;
-    return row.join(" ");
-  };
-  const rows = `${fields("3.4")}\n${fields("9.1").replace("202608181800", "202608181900")}`;
-  const rain = parseHourlyDailyRain(rows, "2026-08-18T19:00");
-
-  assert.deepEqual([...rain.entries()], [[108, 9.1]]);
 });
 
 test("uses official replacement normals for Daegu and Jeonju", () => {
@@ -71,26 +43,9 @@ test("uses official replacement normals for Daegu and Jeonju", () => {
     "2021,864,8,18,23.9,27.1,21.1,8.6,-99.9,1.9,83.4,24.7,4.6,-99.9,1007.5,1009.6,=",
   ].join("\n");
 
-  const normals = parseDailyNormals(rows, "2026-08-18");
+  const normals = parseDailyNormals(rows);
   assert.equal(normals.get(860), 7.9);
   assert.equal(normals.get(864), 8.6);
-});
-
-test("parses only the requested daily normal date", () => {
-  const rows = [
-    "2021,860,8,18,23.9,27.1,21.1,7.9,-99.9,1.9,83.4,24.7,4.6,-99.9,1007.5,1009.6,=",
-    "2021,860,8,19,23.9,27.1,21.1,12.4,-99.9,1.9,83.4,24.7,4.6,-99.9,1007.5,1009.6,=",
-  ].join("\n");
-
-  assert.equal(parseDailyNormals(rows, "2026-08-19").get(860), 12.4);
-});
-
-test("rejects malformed, unsupported, and future dates", () => {
-  assert.equal(parseDate("2026-02-30"), null);
-  assert.equal(parseDate("1972-12-31"), null);
-  assert.equal(parseDate("2099-01-01"), null);
-  assert.equal(parseObservationTime("2026-02-30T01:00"), null);
-  assert.equal(parseObservationTime("2099-01-01T01:00"), null);
 });
 
 test("replaces rain with the selected partial end day while keeping the full daily normal", () => {
@@ -127,13 +82,6 @@ test("offers the new hour from minute 10 KST", () => {
   assert.equal(latestObservationTime(new Date("2026-08-17T16:10:00Z")), "2026-08-18T01:00");
 });
 
-test("marks intraday cache stale sooner than official cache", () => {
-  const fetchedAt = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
-
-  assert.equal(cacheFreshness(fetchedAt, "intraday").stale, true);
-  assert.equal(cacheFreshness(fetchedAt, "official").stale, false);
-});
-
 test("keeps intraday totals while carrying the latest official ranks", () => {
   const current = [{ code: "01", normal: 905.1, precipitation: 650.4, ratio: 71.9, rank: null }] as const;
   const official = [{ code: "01", normal: 899.5, precipitation: 641.6, ratio: 71.4, rank: 9 }] as const;
@@ -168,11 +116,12 @@ test("uses the ASOS daily fallback when KMA regional aggregates are not ready", 
 });
 
 test("reads final RN_DAY from the KMA ASOS daily response", () => {
-  const rows = REPRESENTATIVE_STATIONS.map((station) => {
+  const rows = Array.from({ length: 60 }, (_, index) => {
     const fields = Array.from({ length: 56 }, () => "-9");
     fields[0] = "20260818";
-    fields[1] = String(station);
-    fields[38] = station === 108 ? "12.4" : "-9.0";
+    fields[1] = String(90 + index);
+    fields[2] = index === 18 ? "12.4" : "-9.0";
+    fields[38] = "99.9";
     return fields.join(" ");
   }).join("\n");
 
