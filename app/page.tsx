@@ -50,7 +50,7 @@ export default async function Home({ searchParams }: PageProps) {
         <p className="source-note">전국은 제주특별자치도 4개 지점을 제외한 62개 지점의 평균이며, 1991~2020년 기후평년값을 적용합니다.</p>
         <StationTable data={data} />
       </section>
-      <footer><span>자료: <a href="https://hydro.kma.go.kr/index.do">기상청 수문기상 가뭄정보 시스템</a> · 기상청 APIHub ASOS/지상 평년값</span><span>{data.mode === "intraday" ? "당일 값은 01~23시 공식 시간관측을 사용한 참고용 추정치입니다." : "완료 일값은 매일 00:30 ASOS 00시 마감자료로 갱신됩니다."}</span></footer>
+      <footer><span>자료: <a href="https://hydro.kma.go.kr/index.do">기상청 수문기상 가뭄정보 시스템</a> · 기상청 APIHub ASOS/지상 평년값</span><span>{data.mode === "intraday" ? "당일 값은 01~23시 공식 시간관측을 사용한 참고용 추정치입니다." : "완료 일값은 매일 00:40 ASOS 00시 마감자료로 갱신됩니다."}</span></footer>
     </main>
   );
 }
