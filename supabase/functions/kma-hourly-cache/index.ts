@@ -2,11 +2,11 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { createClient } from "@supabase/supabase-js";
 import ky from "ky";
-import { finalizeOfficialStations, parseCachePayload, parseOfficialDailyRain } from "./daily-rollover.ts";
+import { aggregateOfficialStations, extendOfficialStations, finalizeOfficialStations, parseCachePayload, parseOfficialDailyRain } from "./daily-rollover.ts";
 import type { AggregateValue as Aggregate, CachePayload, Mode, StationValue as Station } from "./daily-rollover.ts";
 import { OfficialDataUnavailableError, refreshOfficial } from "./official-refresh.ts";
 
-const PERIODS = ["1m", "3m", "6m", "12m"] as const;
+const PERIODS = ["1m", "3m", "6m", "12m", "ty"] as const;
 const MONTHS = { "1m": 1, "3m": 3, "6m": 6, "12m": 12 } as const;
 const NORMAL_CODE = new Map([[143, 860], [146, 864]]);
 const API_BASE = "https://apihub.kma.go.kr/api/typ01/url";
@@ -16,6 +16,7 @@ const KST_FORMATTER = new Intl.DateTimeFormat("en-CA", {
 });
 
 type Period = typeof PERIODS[number];
+type RollingPeriod = Exclude<Period, "ty">;
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -39,6 +40,7 @@ function addMonths(date: string, months: number): string {
 }
 
 function periodStart(endDate: string, period: Period): string {
+  if (period === "ty") return `${endDate.slice(0, 4)}-01-01`;
   return addDays(addMonths(endDate, -MONTHS[period]), 1);
 }
 
@@ -111,12 +113,14 @@ async function officialData(date: string, period: Period): Promise<Readonly<{ st
     headers: { Accept: "application/json, text/javascript, */*; q=0.01", Origin: "https://hydro.kma.go.kr", Referer: "https://hydro.kma.go.kr/index.do", "User-Agent": "Mozilla/5.0 (compatible; KMA-Precipitation-Dashboard/1.0)", "X-Requested-With": "XMLHttpRequest" },
     retry: { limit: 2, methods: ["post"] }, timeout: 20_000,
   }).json<unknown>();
-  if (!isRecord(value) || !Array.isArray(value.list2) || value.list2.length !== 66 || !Array.isArray(value.list1) || value.list1.length !== 12 || !Array.isArray(value.list_admin) || value.list_admin.length !== 4) throw new OfficialDataUnavailableError();
+  const validRegions = isRecord(value) && Array.isArray(value.list1) && (period === "ty" ? value.list1.length === 0 : value.list1.length === 12);
+  if (!validRegions || !Array.isArray(value.list2) || value.list2.length !== 66 || !Array.isArray(value.list_admin) || value.list_admin.length !== 4) throw new OfficialDataUnavailableError();
   const stations = value.list2.map((item) => {
     if (!isRecord(item) || typeof item.stn_cd !== "number" || typeof item.stn_nm !== "string") throw new TypeError("invalid official station");
     return { code: item.stn_cd, name: item.stn_nm, normal: numeric(item.ny_prcp), precipitation: numeric(item.rn_total), ratio: numeric(item.rn_ratio_sort) };
   });
-  return { stations, regions: value.list1.map(officialAggregate), admins: value.list_admin.map(officialAggregate) };
+  const regions = period === "ty" ? aggregateOfficialStations(stations).regions : value.list1.map(officialAggregate);
+  return { stations, regions, admins: value.list_admin.map(officialAggregate) };
 }
 
 function required(values: ReadonlyMap<number, number>, code: number, label: string): number {
@@ -149,7 +153,7 @@ function client() {
   return createClient(url, serviceKey, { auth: { persistSession: false } });
 }
 
-async function boundaryData(period: Period, effectiveDate: string, authKey: string) {
+async function boundaryData(period: RollingPeriod, effectiveDate: string, authKey: string) {
   const startDate = periodStart(effectiveDate, period);
   const removedDate = addDays(startDate, -1);
   const [removedRain, removedNormal] = await Promise.all([
@@ -206,20 +210,24 @@ async function updateIntraday(supabase: ReturnType<typeof client>, observationTi
   const baseDate = addDays(effectiveDate, -1);
   const { data, error } = await supabase.from("kma_precip_cache").select("cache_key,payload").like("cache_key", "official:%");
   if (error || !data) throw new TypeError("official cache lookup failed");
-  const bases = new Map(data.map((row) => [row.cache_key, row.payload]));
-  const [endRain, endNormal, boundaries] = await Promise.all([
+  const officialBases = new Map(data.map((row) => [row.cache_key, row.payload]));
+  const [endRain, endNormal, periodBases] = await Promise.all([
     hourlyText(observationTime, authKey).then((text) => parseHourly(text, observationTime)),
     apiText("sfc_norm1.php", normalParams(effectiveDate), authKey).then(parseNormals),
     Promise.all(PERIODS.map(async (period) => {
-      const base = parseCachePayload(bases.get(`official:${period}`), { period, effectiveDate: baseDate, mode: "official" });
-      const boundary = await boundaryData(period, effectiveDate, authKey);
-      return { period, base, boundary };
+      const base = parseCachePayload(officialBases.get(`official:${period}`), { period, effectiveDate: baseDate, mode: "official" });
+      return { period, base };
     })),
   ]);
-  const rows = boundaries.map(({ period, base, boundary }) => ({
-    cache_key: `intraday:${period}`, observation_time: observationTime,
-    payload: payload(period, effectiveDate, "intraday", observationTime, adjust(base.stations, boundary.removedRain, endRain, boundary.removedNormal, endNormal), base.regions, base.admins),
-    refreshed_at: new Date().toISOString(),
+  const rows = await Promise.all(periodBases.map(async ({ period, base }) => {
+    const stations = period === "ty"
+      ? extendOfficialStations(base.stations, endRain, endNormal)
+      : await boundaryData(period, effectiveDate, authKey).then((boundary) => adjust(base.stations, boundary.removedRain, endRain, boundary.removedNormal, endNormal));
+    return {
+      cache_key: `intraday:${period}`, observation_time: observationTime,
+      payload: payload(period, effectiveDate, "intraday", observationTime, stations, base.regions, base.admins),
+      refreshed_at: new Date().toISOString(),
+    };
   }));
   const { error: upsertError } = await supabase.from("kma_precip_cache").upsert(rows);
   if (upsertError) throw new TypeError("intraday cache update failed");

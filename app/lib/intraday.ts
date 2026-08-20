@@ -1,4 +1,5 @@
 type RollingPeriod = "1m" | "3m" | "6m" | "12m";
+type Period = RollingPeriod | "ty";
 
 export type StationValue = Readonly<{
   code: number;
@@ -34,7 +35,8 @@ const GROUPS = {
   jeju: [184, 185, 188, 189],
 } as const;
 
-export function periodStart(endDate: string, period: RollingPeriod): string {
+export function periodStart(endDate: string, period: Period): string {
+  if (period === "ty") return `${endDate.slice(0, 4)}-01-01`;
   return addDays(addMonths(endDate, -MONTHS[period]), 1);
 }
 
@@ -90,6 +92,17 @@ export function adjustStation(input: Readonly<{
   return { precipitation, normal, ratio: normal > 0 ? round1(precipitation / normal * 100) : 0 };
 }
 
+export function extendStation(input: Readonly<{
+  baseNormal: number;
+  basePrecipitation: number;
+  endDayNormal: number;
+  endDayPrecipitation: number;
+}>): Readonly<{ normal: number; precipitation: number; ratio: number }> {
+  const precipitation = round1(input.basePrecipitation + input.endDayPrecipitation);
+  const normal = round1(input.baseNormal + input.endDayNormal);
+  return { precipitation, normal, ratio: normal > 0 ? round1(precipitation / normal * 100) : 0 };
+}
+
 export function adjustStations(
   base: readonly StationValue[],
   startRain: ReadonlyMap<number, number>,
@@ -108,6 +121,25 @@ export function adjustStations(
       basePrecipitation: station.precipitation,
     };
     return { ...station, ...adjustStation(values) };
+  });
+}
+
+export function extendStations(
+  base: readonly StationValue[],
+  endRain: ReadonlyMap<number, number>,
+  endNormals: ReadonlyMap<number, number>,
+): StationValue[] {
+  return base.map((station) => {
+    const normalCode = NORMAL_CODE.get(station.code) ?? station.code;
+    return {
+      ...station,
+      ...extendStation({
+        baseNormal: station.normal,
+        basePrecipitation: station.precipitation,
+        endDayNormal: required(endNormals, normalCode, "종료일 평년값"),
+        endDayPrecipitation: required(endRain, station.code, "종료일 시간강수"),
+      }),
+    };
   });
 }
 

@@ -4,6 +4,7 @@ import { fetchDailyNormals, fetchHourlyDailyRain } from "./api-hub";
 import {
   adjustStations,
   aggregateStations,
+  extendStations,
   latestObservationTime,
   mergeAggregateRanks,
   parseObservationTime,
@@ -12,7 +13,7 @@ import {
 
 export { latestObservationTime, parseObservationTime };
 
-const PERIODS = ["1m", "3m", "6m", "12m"] as const;
+const PERIODS = ["1m", "3m", "6m", "12m", "ty"] as const;
 const REGION_CODES = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"] as const;
 const ADMIN_CODES = ["01", "02", "03", "04"] as const;
 const KST_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
@@ -213,9 +214,17 @@ async function loadOne(requestedDate: string, period: Period): Promise<Dashboard
     const response = await fetchOfficialPayload(requestedDate, period);
     const payload = payloadSchema.parse(response);
     if (payload.list1.length === 0 && payload.list2.length === 0) return { kind: "missing", requestedDate };
-    if (payload.list1.length !== 12 || payload.list2.length !== 66 || payload.list_admin.length !== 4 || !payload.search_period || !payload.search_date_db) {
+    const validRegions = period === "ty" ? payload.list1.length === 0 : payload.list1.length === 12;
+    if (!validRegions || payload.list2.length !== 66 || payload.list_admin.length !== 4 || !payload.search_period || !payload.search_date_db) {
       return { kind: "unavailable", message: "공식 서버 응답의 지점 또는 권역 수가 예상과 다릅니다." };
     }
+    const stations = payload.list2.map((row) => ({
+      code: row.stn_cd,
+      name: row.stn_nm,
+      normal: numeric(row.ny_prcp),
+      precipitation: numeric(row.rn_total),
+      ratio: row.rn_ratio_sort,
+    }));
     return {
       kind: "ok",
       data: {
@@ -223,15 +232,9 @@ async function loadOne(requestedDate: string, period: Period): Promise<Dashboard
         effectiveDate: `${payload.search_date_db.slice(0, 4)}-${payload.search_date_db.slice(4, 6)}-${payload.search_date_db.slice(6, 8)}`,
         searchPeriod: payload.search_period,
         period,
-        regions: payload.list1.map(toAggregate),
+        regions: period === "ty" ? aggregateStations(stations).regions : payload.list1.map(toAggregate),
         admins: payload.list_admin.map(toAggregate),
-        stations: payload.list2.map((row) => ({
-          code: row.stn_cd,
-          name: row.stn_nm,
-          normal: numeric(row.ny_prcp),
-          precipitation: numeric(row.rn_total),
-          ratio: row.rn_ratio_sort,
-        })),
+        stations,
         fetchedAt: new Date().toISOString(),
         mode: "official",
         observationTime: null,
@@ -253,15 +256,17 @@ async function loadIntradayDashboard(observationTime: string, period: Period): P
   if (base.kind !== "ok") return base;
 
   const startDate = periodStart(effectiveDate, period);
-  const removedDate = addDays(startDate, -1);
   try {
-    const [startRain, endRain, startNormals, endNormals] = await Promise.all([
-      fetchHourlyDailyRain(`${startDate}T00:00`),
+    const [endRain, endNormals] = await Promise.all([
       fetchHourlyDailyRain(observationTime),
-      fetchDailyNormals(removedDate),
       fetchDailyNormals(effectiveDate),
     ]);
-    const stations = adjustStations(base.data.stations, startRain, endRain, startNormals, endNormals);
+    const stations = period === "ty"
+      ? extendStations(base.data.stations, endRain, endNormals)
+      : await Promise.all([
+        fetchHourlyDailyRain(`${startDate}T00:00`),
+        fetchDailyNormals(addDays(startDate, -1)),
+      ]).then(([startRain, startNormals]) => adjustStations(base.data.stations, startRain, endRain, startNormals, endNormals));
     const calculated = aggregateStations(stations);
     const regions = mergeAggregateRanks(calculated.regions, base.data.regions);
     const admins = mergeAggregateRanks(calculated.admins, base.data.admins);

@@ -6,7 +6,7 @@ import { useTransition } from "react";
 import { addDays, addMonths, type Period } from "../lib/precipitation";
 
 const PERIOD_OPTIONS = [
-  ["1m", "최근 1개월"], ["3m", "최근 3개월"], ["6m", "최근 6개월"], ["12m", "최근 1년"],
+  ["1m", "최근 1개월"], ["3m", "최근 3개월"], ["6m", "최근 6개월"], ["12m", "최근 1년"], ["ty", "올해 누적"],
 ] as const;
 
 type ControlsProps = Readonly<{

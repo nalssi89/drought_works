@@ -1,0 +1,4 @@
+{
+  "compilerOptions": { "strict": true },
+  "imports": { "ky": "npm:ky@1.7.5" }
+}

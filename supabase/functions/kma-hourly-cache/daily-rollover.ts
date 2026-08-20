@@ -16,7 +16,7 @@ export type AggregateValue = Readonly<{
   rank: number | null;
 }>;
 
-export type Period = "1m" | "3m" | "6m" | "12m";
+export type Period = "1m" | "3m" | "6m" | "12m" | "ty";
 export type Mode = "official" | "intraday";
 export type CachePayload = Readonly<{
   schemaVersion: 2;
@@ -51,6 +51,7 @@ const GROUPS = {
   gyeongnam: [152, 155, 159, 162, 192, 284, 285, 288, 289, 294, 295],
   jeju: [184, 185, 188, 189],
 } as const;
+const NORMAL_CODE = new Map([[143, 860], [146, 864]]);
 
 const GANGWON = [...GROUPS.yeongseo, ...GROUPS.yeongdong] as const;
 const NATIONAL = [
@@ -126,6 +127,19 @@ export function finalizeOfficialStations(input: FinalizationInput): Readonly<{
     regions: mergeRanks(aggregates.regions, input.regions),
     admins: mergeRanks(aggregates.admins, input.admins),
   };
+}
+
+export function extendOfficialStations(
+  stations: readonly StationValue[],
+  endRain: ReadonlyMap<number, number>,
+  endNormal: ReadonlyMap<number, number>,
+): StationValue[] {
+  return stations.map((station) => {
+    const normalCode = NORMAL_CODE.get(station.code) ?? station.code;
+    const precipitation = round1(station.precipitation + required(endRain, station.code));
+    const normal = round1(station.normal + required(endNormal, normalCode));
+    return { ...station, precipitation, normal, ratio: normal > 0 ? round1(precipitation / normal * 100) : 0 };
+  });
 }
 
 function aggregate(code: string, codes: readonly number[], stations: readonly StationValue[]): AggregateValue {

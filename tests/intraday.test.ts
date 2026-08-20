@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   adjustStation,
+  extendStation,
   latestObservationTime,
   mergeAggregateRanks,
   parseDailyNormals,
@@ -14,6 +15,7 @@ import { OfficialDataUnavailableError, refreshOfficial } from "../supabase/funct
 import {
   REPRESENTATIVE_STATIONS,
   aggregateOfficialStations,
+  extendOfficialStations,
   finalizeOfficialStations,
   parseOfficialDailyRain,
 } from "../supabase/functions/kma-hourly-cache/daily-rollover.ts";
@@ -23,6 +25,11 @@ test("moves the rolling window start to D+1", () => {
   assert.equal(periodStart("2026-08-18", "3m"), "2026-05-19");
   assert.equal(periodStart("2026-08-18", "6m"), "2026-02-19");
   assert.equal(periodStart("2026-08-18", "12m"), "2025-08-19");
+});
+
+test("starts the year-to-date period on January 1", () => {
+  assert.equal(periodStart("2026-08-18", "ty"), "2026-01-01");
+  assert.equal(periodStart("2027-01-01", "ty"), "2027-01-01");
 });
 
 test("reads RN_DAY and treats KMA missing-rain sentinels as zero", () => {
@@ -64,6 +71,27 @@ test("replaces rain with the selected partial end day while keeping the full dai
   assert.equal(morning.normal, 1008.8);
   assert.equal(morning.normal, evening.normal);
   assert.equal(morning.ratio, 85.3);
+});
+
+test("extends the year-to-date total without removing January 1", () => {
+  const result = extendStation({
+    baseNormal: 900,
+    basePrecipitation: 700,
+    endDayNormal: 8,
+    endDayPrecipitation: 12,
+  });
+
+  assert.deepEqual(result, { precipitation: 712, normal: 908, ratio: 78.4 });
+});
+
+test("extends cached year-to-date stations for the hourly refresh", () => {
+  const stations = [{ code: 108, name: "서울", normal: 900, precipitation: 700, ratio: 77.8 }] as const;
+  const endRain = new Map([[108, 12]]);
+  const endNormal = new Map([[108, 8]]);
+
+  const result = extendOfficialStations(stations, endRain, endNormal);
+
+  assert.deepEqual(result, [{ code: 108, name: "서울", precipitation: 712, normal: 908, ratio: 78.4 }]);
 });
 
 test("refreshes at minute 10 of the next applicable hour", () => {

@@ -35,6 +35,18 @@ test("server-renders the official six-month regional dashboard", async () => {
   assert.doesNotMatch(html, /codex-preview|SkeletonPreview|react-loading-skeleton/);
 });
 
+test("server-renders year-to-date from January 1 and places it after the rolling year", async () => {
+  const response = await render("/?date=2026-08-17&period=ty");
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /2026년 01월 01일 ~ 2026년 08월 17일/);
+  const periods = html.slice(html.indexOf('<nav class="periods"'), html.indexOf("</nav>", html.indexOf('<nav class="periods"')));
+  const rollingYear = periods.indexOf("period=12m");
+  const yearToDate = periods.indexOf("period=ty");
+  assert.ok(rollingYear >= 0 && rollingYear < yearToDate);
+});
+
 test("keeps production metadata, aligned tables, and removes starter artifacts", async () => {
   const [layout, page, packageJson, styles] = await Promise.all([
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
