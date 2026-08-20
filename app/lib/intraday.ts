@@ -34,26 +34,14 @@ const GROUPS = {
   jeju: [184, 185, 188, 189],
 } as const;
 
-export const REPRESENTATIVE_STATION_CODES = [
-  ...GROUPS.metro, ...GROUPS.yeongseo, ...GROUPS.yeongdong, ...GROUPS.chungbuk, ...GROUPS.chungnam,
-  ...GROUPS.jeonbuk, ...GROUPS.jeonnam, ...GROUPS.gyeongbuk, ...GROUPS.gyeongnam, ...GROUPS.jeju,
-] as const;
-
 export function periodStart(endDate: string, period: RollingPeriod): string {
   return addDays(addMonths(endDate, -MONTHS[period]), 1);
 }
 
-export function periodBoundaryDates(endDate: string, period: RollingPeriod): Readonly<{ startDate: string; removedDate: string; endDate: string }> {
-  const startDate = periodStart(endDate, period);
-  return { startDate, removedDate: addDays(startDate, -1), endDate };
-}
-
-export function parseObservationTime(value: string | undefined, now = new Date()): string | null {
+export function parseObservationTime(value: string | undefined): string | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}T(?:0[1-9]|1\d|2[0-3]):00$/.test(value)) return null;
-  if (!isCalendarDate(value.slice(0, 10)) || value.slice(0, 10) < "1973-01-01") return null;
   const parsed = new Date(`${value}:00+09:00`);
-  const latest = new Date(`${latestObservationTime(now)}:00+09:00`);
-  return Number.isNaN(parsed.valueOf()) || parsed.valueOf() > latest.valueOf() ? null : value;
+  return Number.isNaN(parsed.valueOf()) ? null : value;
 }
 
 export function latestObservationTime(now = new Date()): string {
@@ -65,11 +53,10 @@ export function latestObservationTime(now = new Date()): string {
   return hour === 0 ? `${addDays(date, -1)}T23:00` : `${date}T${String(hour).padStart(2, "0")}:00`;
 }
 
-export function parseHourlyDailyRain(text: string, observationTime: string): Map<number, number> {
+export function parseHourlyDailyRain(text: string): Map<number, number> {
   const result = new Map<number, number>();
-  const prefix = observationTime.replaceAll(/[-:T]/g, "");
   for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith(`${prefix} `)) continue;
+    if (!/^\d{12}\s/.test(line)) continue;
     const fields = line.trim().split(/\s+/);
     const station = Number(fields[1]);
     const dailyRain = Number(fields[16]);
@@ -78,12 +65,11 @@ export function parseHourlyDailyRain(text: string, observationTime: string): Map
   return result;
 }
 
-export function parseDailyNormals(text: string, date: string): Map<number, number> {
+export function parseDailyNormals(text: string): Map<number, number> {
   const result = new Map<number, number>();
-  const [, month, day] = date.split("-");
   for (const line of text.split(/\r?\n/)) {
+    if (!/^2021,/.test(line)) continue;
     const fields = line.split(",").map((field) => field.trim());
-    if (fields[0] !== "2021" || fields[2] !== String(Number(month)) || fields[3] !== String(Number(day))) continue;
     const station = Number(fields[1]);
     const rain = Number(fields[7]);
     if (Number.isInteger(station) && Number.isFinite(rain) && rain >= 0) result.set(station, rain);
@@ -106,7 +92,7 @@ export function adjustStation(input: Readonly<{
 
 export function adjustStations(
   base: readonly StationValue[],
-  removedRain: ReadonlyMap<number, number>,
+  startRain: ReadonlyMap<number, number>,
   endRain: ReadonlyMap<number, number>,
   startNormals: ReadonlyMap<number, number>,
   endNormals: ReadonlyMap<number, number>,
@@ -114,7 +100,7 @@ export function adjustStations(
   return base.map((station) => {
     const normalCode = NORMAL_CODE.get(station.code) ?? station.code;
     const values = {
-      startDayPrecipitation: required(removedRain, station.code, "제거일 시간강수"),
+      startDayPrecipitation: required(startRain, station.code, "시작일 시간강수"),
       endDayPrecipitation: required(endRain, station.code, "종료일 시간강수"),
       startDayNormal: required(startNormals, normalCode, "시작일 평년값"),
       endDayNormal: required(endNormals, normalCode, "종료일 평년값"),
@@ -191,10 +177,4 @@ function addMonths(date: string, months: number): string {
   const lastDay = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 0)).getUTCDate();
   value.setUTCDate(Math.min(day, lastDay));
   return value.toISOString().slice(0, 10);
-}
-
-function isCalendarDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00Z`);
-  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }

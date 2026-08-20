@@ -1,24 +1,20 @@
 import ky, { HTTPError, TimeoutError } from "ky";
 import { z } from "zod";
-import { fetchDailyNormals, fetchHourlyDailyRain } from "./api-hub.ts";
+import { fetchDailyNormals, fetchHourlyDailyRain } from "./api-hub";
 import {
   adjustStations,
   aggregateStations,
   latestObservationTime,
   mergeAggregateRanks,
   parseObservationTime,
-  periodBoundaryDates,
   periodStart,
-  REPRESENTATIVE_STATION_CODES,
-} from "./intraday.ts";
+} from "./intraday";
 
 export { latestObservationTime, parseObservationTime };
 
 const PERIODS = ["1m", "3m", "6m", "12m"] as const;
 const REGION_CODES = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"] as const;
 const ADMIN_CODES = ["01", "02", "03", "04"] as const;
-const CACHE_MAX_AGE_MS = { official: 36 * 60 * 60_000, intraday: 2 * 60 * 60_000 } as const;
-const MIN_SUPPORTED_DATE = "1973-01-01";
 const KST_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Seoul",
   year: "numeric",
@@ -48,7 +44,7 @@ const stationSchema = z.object({
   stn_nm: z.string().min(1),
   ny_prcp: z.string(),
   rn_total: z.string(),
-  rn_ratio_sort: z.number().finite(),
+  rn_ratio_sort: z.number(),
 });
 
 const payloadSchema = z.object({
@@ -62,16 +58,16 @@ const payloadSchema = z.object({
 const cachedStationSchema = z.object({
   code: z.number().int(),
   name: z.string().min(1),
-  normal: z.number().finite().nonnegative(),
-  precipitation: z.number().finite().nonnegative(),
-  ratio: z.number().finite().nonnegative(),
+  normal: z.number().nonnegative(),
+  precipitation: z.number().nonnegative(),
+  ratio: z.number().nonnegative(),
 });
 
 const cachedAggregateSchema = z.object({
   code: z.string(),
-  normal: z.number().finite().nonnegative(),
-  precipitation: z.number().finite().nonnegative(),
-  ratio: z.number().finite().nonnegative(),
+  normal: z.number().nonnegative(),
+  precipitation: z.number().nonnegative(),
+  ratio: z.number().nonnegative(),
   rank: z.number().int().positive().nullable(),
 });
 
@@ -82,10 +78,9 @@ const cachedPayloadSchema = z.object({
   mode: z.enum(["official", "intraday"]),
   observationTime: z.string().regex(/^\d{4}-\d{2}-\d{2}T(?:0\d|1\d|2[0-3]):00$/).nullable(),
   stations: z.array(cachedStationSchema).length(66),
-  regions: z.array(cachedAggregateSchema).length(12),
-  admins: z.array(cachedAggregateSchema).length(4),
+  regions: z.array(cachedAggregateSchema).default([]),
+  admins: z.array(cachedAggregateSchema).default([]),
   fetchedAt: z.string().datetime(),
-  source: z.enum(["hydro", "daily", "intraday"]).optional(),
 });
 
 export type Aggregate = Readonly<{
@@ -115,9 +110,6 @@ export type DashboardData = Readonly<{
   fetchedAt: string;
   mode: "official" | "intraday";
   observationTime: string | null;
-  source: "hydro" | "daily" | "intraday";
-  stale: boolean;
-  ageMinutes: number;
 }>;
 
 export type DashboardResult =
@@ -125,19 +117,9 @@ export type DashboardResult =
   | Readonly<{ kind: "missing"; requestedDate: string }>
   | Readonly<{ kind: "unavailable"; message: string }>;
 
-export type CacheFreshness = Readonly<{ stale: boolean; ageMinutes: number }>;
-
-export function cacheFreshness(fetchedAt: string, mode: "official" | "intraday", now = Date.now()): CacheFreshness {
-  const fetchedTime = Date.parse(fetchedAt);
-  const ageMinutes = Number.isFinite(fetchedTime) ? Math.max(0, Math.round((now - fetchedTime) / 60_000)) : Number.POSITIVE_INFINITY;
-  const futureSkew = Number.isFinite(fetchedTime) && fetchedTime - now > 5 * 60_000;
-  return { stale: futureSkew || !Number.isFinite(fetchedTime) || now - fetchedTime > CACHE_MAX_AGE_MS[mode], ageMinutes };
-}
-
 export function parseDate(value: string | undefined): string | null {
   const result = dateSchema.safeParse(value);
-  if (!result.success || result.data < MIN_SUPPORTED_DATE || result.data > currentKstDate()) return null;
-  return result.data;
+  return result.success ? result.data : null;
 }
 
 export function latestCandidateDate(): string {
@@ -167,26 +149,19 @@ export function addMonths(date: string, months: number): string {
 }
 
 export async function loadDashboard(requestedDate: string | null, period: Period, observationTime: string | null = null, useCachedLatest = false): Promise<DashboardResult> {
-  let staleCached: DashboardResult | null = null;
   if (useCachedLatest) {
     const cached = await loadCachedDashboard(period, observationTime ? "intraday" : "official");
-    if (cached.kind === "ok" && !cached.data.stale) return cached;
-    if (cached.kind === "ok") staleCached = cached;
+    if (cached.kind === "ok") return cached;
   }
-  if (observationTime) {
-    const live = await loadIntradayDashboard(observationTime, period);
-    return live.kind === "ok" || staleCached === null ? live : staleCached;
-  }
+  if (observationTime) return loadIntradayDashboard(observationTime, period);
   if (requestedDate) return loadOne(requestedDate, period);
   let candidate = latestCandidateDate();
-  let lastUnavailable: DashboardResult | null = null;
   for (let attempt = 0; attempt < 7; attempt += 1) {
     const result = await loadOne(candidate, period);
-    if (result.kind === "ok") return result;
-    if (result.kind === "unavailable") lastUnavailable = result;
+    if (result.kind !== "missing") return result;
     candidate = addDays(candidate, -1);
   }
-  return staleCached ?? lastUnavailable ?? { kind: "unavailable", message: "최근 7일 안에 완료된 공식 일자료를 찾지 못했습니다." };
+  return { kind: "unavailable", message: "최근 7일 안에 완료된 공식 일자료를 찾지 못했습니다." };
 }
 
 async function loadCachedDashboard(period: Period, mode: "official" | "intraday"): Promise<DashboardResult> {
@@ -202,18 +177,12 @@ async function loadCachedDashboard(period: Period, mode: "official" | "intraday"
     }).json<unknown>();
     const cached = cachedPayloadSchema.parse(value);
     if (cached.period !== period || cached.mode !== mode) throw new TypeError("예약 갱신 자료의 조회 조건이 다릅니다.");
-    if (parseDate(cached.effectiveDate) !== cached.effectiveDate || (cached.observationTime && parseObservationTime(cached.observationTime) === null)) {
-      throw new TypeError("예약 갱신 자료의 기준일 또는 관측시각이 유효하지 않습니다.");
-    }
-    validateCachedIdentity(cached);
     const stations = cached.stations.map((station) => ({ ...station }));
     const calculated = aggregateStations(stations);
-    const regions = mode === "official" ? cached.regions : mergeAggregateRanks(calculated.regions, cached.regions);
-    const admins = mode === "official" ? cached.admins : mergeAggregateRanks(calculated.admins, cached.admins);
+    const regions = mode === "official" && cached.regions.length === 12 ? cached.regions : mergeAggregateRanks(calculated.regions, cached.regions);
+    const admins = mode === "official" && cached.admins.length === 4 ? cached.admins : mergeAggregateRanks(calculated.admins, cached.admins);
     const startDate = periodStart(cached.effectiveDate, period);
     const elapsedHours = cached.observationTime ? Number(cached.observationTime.slice(11, 13)) : 24;
-    const source = cached.source ?? (mode === "official" ? "hydro" : "intraday");
-    const freshness = cacheFreshness(cached.fetchedAt, mode);
     return {
       kind: "ok",
       data: {
@@ -229,9 +198,6 @@ async function loadCachedDashboard(period: Period, mode: "official" | "intraday"
         fetchedAt: cached.fetchedAt,
         mode,
         observationTime: cached.observationTime,
-        source,
-        stale: freshness.stale,
-        ageMinutes: freshness.ageMinutes,
       },
     };
   } catch (error) {
@@ -247,16 +213,14 @@ async function loadOne(requestedDate: string, period: Period): Promise<Dashboard
     const response = await fetchOfficialPayload(requestedDate, period);
     const payload = payloadSchema.parse(response);
     if (payload.list1.length === 0 && payload.list2.length === 0) return { kind: "missing", requestedDate };
-    const effectiveDate = parseOfficialDate(payload.search_date_db);
-    if (payload.list1.length !== 12 || payload.list2.length !== 66 || payload.list_admin.length !== 4 || !payload.search_period || effectiveDate !== requestedDate) {
+    if (payload.list1.length !== 12 || payload.list2.length !== 66 || payload.list_admin.length !== 4 || !payload.search_period || !payload.search_date_db) {
       return { kind: "unavailable", message: "공식 서버 응답의 지점 또는 권역 수가 예상과 다릅니다." };
     }
-    validateOfficialIdentity(payload);
     return {
       kind: "ok",
       data: {
         requestedDate,
-        effectiveDate,
+        effectiveDate: `${payload.search_date_db.slice(0, 4)}-${payload.search_date_db.slice(4, 6)}-${payload.search_date_db.slice(6, 8)}`,
         searchPeriod: payload.search_period,
         period,
         regions: payload.list1.map(toAggregate),
@@ -271,9 +235,6 @@ async function loadOne(requestedDate: string, period: Period): Promise<Dashboard
         fetchedAt: new Date().toISOString(),
         mode: "official",
         observationTime: null,
-        source: "hydro",
-        stale: false,
-        ageMinutes: 0,
       },
     };
   } catch (error) {
@@ -291,12 +252,13 @@ async function loadIntradayDashboard(observationTime: string, period: Period): P
   const base = await loadOne(baseDate, period);
   if (base.kind !== "ok") return base;
 
-    const boundary = periodBoundaryDates(effectiveDate, period);
-    try {
-      const [startRain, endRain, startNormals, endNormals] = await Promise.all([
-      fetchHourlyDailyRain(`${boundary.removedDate}T00:00`),
+  const startDate = periodStart(effectiveDate, period);
+  const removedDate = addDays(startDate, -1);
+  try {
+    const [startRain, endRain, startNormals, endNormals] = await Promise.all([
+      fetchHourlyDailyRain(`${startDate}T00:00`),
       fetchHourlyDailyRain(observationTime),
-      fetchDailyNormals(boundary.removedDate),
+      fetchDailyNormals(removedDate),
       fetchDailyNormals(effectiveDate),
     ]);
     const stations = adjustStations(base.data.stations, startRain, endRain, startNormals, endNormals);
@@ -308,7 +270,7 @@ async function loadIntradayDashboard(observationTime: string, period: Period): P
       data: {
         requestedDate: effectiveDate,
         effectiveDate,
-        searchPeriod: `${displayDate(boundary.startDate)} 00시 ~ ${displayDate(effectiveDate)} ${String(elapsedHours).padStart(2, "0")}시 (당일 관측 반영 추정)`,
+        searchPeriod: `${displayDate(startDate)} 00시 ~ ${displayDate(effectiveDate)} ${String(elapsedHours).padStart(2, "0")}시 (당일 관측 반영 추정)`,
         period,
         regions,
         admins,
@@ -316,9 +278,6 @@ async function loadIntradayDashboard(observationTime: string, period: Period): P
         fetchedAt: new Date().toISOString(),
         mode: "intraday",
         observationTime,
-        source: "intraday",
-        stale: false,
-        ageMinutes: 0,
       },
     };
   } catch (error) {
@@ -361,7 +320,7 @@ function toAggregate(row: z.infer<typeof aggregateSchema>): Aggregate {
     normal: numeric(row.ny_prcp),
     precipitation: numeric(row.rn_total),
     ratio: numeric(row.rn_ratio),
-    rank: numericRank(row.rank_num),
+    rank: numeric(row.rank_num),
   };
 }
 
@@ -369,41 +328,6 @@ function numeric(value: string): number {
   const parsed = Number(value.replaceAll(",", ""));
   if (!Number.isFinite(parsed)) throw new TypeError(`Invalid numeric value: ${value}`);
   return parsed;
-}
-
-function numericRank(value: string): number | null {
-  const parsed = Number(value.replaceAll(",", ""));
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function validateCachedIdentity(cached: z.infer<typeof cachedPayloadSchema>): void {
-  const stationCodes = new Set(cached.stations.map((station) => station.code));
-  const regionCodes = new Set(cached.regions.map((row) => row.code));
-  const adminCodes = new Set(cached.admins.map((row) => row.code));
-  if (stationCodes.size !== REPRESENTATIVE_STATION_CODES.length || REPRESENTATIVE_STATION_CODES.some((code) => !stationCodes.has(code))) throw new TypeError("예약 갱신 자료의 지점 집합이 다릅니다.");
-  if (regionCodes.size !== REGION_CODES.length || REGION_CODES.some((code) => !regionCodes.has(code))) throw new TypeError("예약 갱신 자료의 권역 집합이 다릅니다.");
-  if (adminCodes.size !== ADMIN_CODES.length || ADMIN_CODES.some((code) => !adminCodes.has(code))) throw new TypeError("예약 갱신 자료의 집계 집합이 다릅니다.");
-}
-
-function validateOfficialIdentity(payload: z.infer<typeof payloadSchema>): void {
-  const stationCodes = new Set(payload.list2.map((station) => station.stn_cd));
-  const regionCodes = new Set(payload.list1.map((row) => row.brtc_cd));
-  const adminCodes = new Set(payload.list_admin.map((row) => row.brtc_cd));
-  if (stationCodes.size !== REPRESENTATIVE_STATION_CODES.length || REPRESENTATIVE_STATION_CODES.some((code) => !stationCodes.has(code))) throw new TypeError("공식 응답의 지점 집합이 다릅니다.");
-  if (regionCodes.size !== REGION_CODES.length || REGION_CODES.some((code) => !regionCodes.has(code))) throw new TypeError("공식 응답의 권역 집합이 다릅니다.");
-  if (adminCodes.size !== ADMIN_CODES.length || ADMIN_CODES.some((code) => !adminCodes.has(code))) throw new TypeError("공식 응답의 집계 집합이 다릅니다.");
-}
-
-function parseOfficialDate(value: string | undefined): string | null {
-  if (!value || !/^\d{8}$/.test(value)) return null;
-  const date = `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
-  return parseDate(date);
-}
-
-function currentKstDate(now = new Date()): string {
-  const parts = KST_DATE_FORMATTER.formatToParts(now);
-  const values = new Map(parts.map((part) => [part.type, part.value]));
-  return `${values.get("year")}-${values.get("month")}-${values.get("day")}`;
 }
 
 function displayDate(value: string): string {
