@@ -1,7 +1,9 @@
 import { AutoRefresh } from "./components/auto-refresh";
 import { Controls } from "./components/controls";
 import { AdminTable, RegionTable, StationTable } from "./components/data-tables";
-import { latestObservationTime, loadDashboard, parseDate, parseObservationTime, periodSchema } from "./lib/precipitation";
+import { loadCustomDashboard } from "./lib/custom-dashboard";
+import { CUSTOM_PERIOD, defaultCustomStart, type PeriodSelection } from "./lib/custom-period";
+import { latestCandidateDate, latestObservationTime, loadDashboard, parseDate, parseObservationTime, periodSchema } from "./lib/precipitation";
 
 type PageProps = Readonly<{ searchParams: Promise<Record<string, string | readonly string[] | undefined>> }>;
 
@@ -12,20 +14,24 @@ export default async function Home({ searchParams }: PageProps) {
   const dateValue = first(params.date);
   const requestedDate = parseDate(dateValue);
   const periodResult = periodSchema.safeParse(first(params.period));
-  const period = periodResult.success ? periodResult.data : "6m";
+  const period: PeriodSelection = first(params.period) === CUSTOM_PERIOD ? CUSTOM_PERIOD : periodResult.success ? periodResult.data : "6m";
   const intraday = first(params.intraday) === "1";
   const maximumObservationTime = latestObservationTime();
   const explicitObservationTime = parseObservationTime(first(params.time));
   const observationTime = intraday ? (explicitObservationTime ?? maximumObservationTime) : null;
-  const useCachedLatest = !dateValue && (!intraday || !explicitObservationTime);
-  const result = await loadDashboard(requestedDate, period, observationTime, useCachedLatest);
+  const customEndDate = observationTime?.slice(0, 10) ?? requestedDate ?? latestCandidateDate();
+  const customStartDate = parseDate(first(params.start)) ?? defaultCustomStart(customEndDate);
+  const useCachedLatest = period !== CUSTOM_PERIOD && !dateValue && (!intraday || !explicitObservationTime);
+  const result = period === CUSTOM_PERIOD
+    ? await loadCustomDashboard({ startDate: customStartDate, endDate: customEndDate }, observationTime)
+    : await loadDashboard(requestedDate, period, observationTime, useCachedLatest);
 
   if (result.kind !== "ok") {
-    const date = requestedDate ?? "";
+    const date = period === CUSTOM_PERIOD ? customEndDate : requestedDate ?? "";
     return (
       <main className="site-shell">
         <header className="site-header"><h1>권역별 누적강수 현황</h1></header>
-        {date ? <Controls date={date} period={period} intraday={intraday} observationTime={observationTime ?? `${date}T18:00`} maximumObservationTime={maximumObservationTime} liveLatest={false} /> : null}
+        {date ? <Controls date={date} startDate={period === CUSTOM_PERIOD ? customStartDate : null} period={period} intraday={intraday} observationTime={observationTime ?? `${date}T18:00`} maximumObservationTime={maximumObservationTime} liveLatest={false} /> : null}
         <section className="error-panel" role="alert"><h2>자료를 표시할 수 없습니다</h2><p>{result.kind === "missing" ? `${result.requestedDate} 기준 공식 자료가 없습니다.` : result.message}</p><a href={`/?period=${period}`}>최신 완료일로 돌아가기</a></section>
       </main>
     );
@@ -38,7 +44,7 @@ export default async function Home({ searchParams }: PageProps) {
       <header className="site-header">
         <h1>권역별 누적강수 현황</h1>
       </header>
-      <Controls date={data.effectiveDate} period={data.period} intraday={data.mode === "intraday"} observationTime={data.observationTime ?? `${data.effectiveDate}T18:00`} maximumObservationTime={maximumObservationTime} liveLatest={useCachedLatest} />
+      <Controls date={data.effectiveDate} startDate={data.period === CUSTOM_PERIOD ? customStartDate : null} period={data.period} intraday={data.mode === "intraday"} observationTime={data.observationTime ?? `${data.effectiveDate}T18:00`} maximumObservationTime={maximumObservationTime} liveLatest={useCachedLatest} />
       {data.mode === "intraday" ? <p className="estimate-notice" role="note"><strong>추정 산출:</strong> 선택 시각의 공식 RN_DAY 일누적을 반영하고, 평년값은 종료일 하루의 일평년값 전체를 적용해 시간과 관계없이 동일합니다. 최저순위는 직전 완료된 공식 일자료 기준입니다.</p> : null}
       <section className="data-section">
         <div className="section-title">

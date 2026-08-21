@@ -48,9 +48,12 @@ a { color: inherit; }
 .freshness strong { color: var(--status-good); }
 .control-panel { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: var(--space-2) var(--space-5); padding: var(--space-4) 0; }
 .date-form, .date-moves, .periods { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
-.date-form label, .periods > span { min-width: 64px; font-size: var(--font-body); font-weight: 700; }
+.date-form label, .date-range-title, .periods > span { min-width: 64px; font-size: var(--font-body); font-weight: 700; }
 .date-form input, .date-moves a, .period-button, .time-control input { display: inline-flex; min-height: var(--control-height); align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--surface); color: var(--ink); text-decoration: none; }
 .date-form input { padding: 0 10px; }
+.custom-date-form { gap: var(--space-2); }
+.custom-date-form label { min-width: auto; font-size: var(--font-small); }
+.date-range-separator { color: var(--muted); }
 .update-status { min-width: 88px; color: var(--muted); font-size: var(--font-caption); }
 .date-moves a { min-width: 54px; padding: 0 10px; font-size: var(--font-small); }
 .date-moves .now-link { border-color: var(--navy-900); background: var(--navy-900); color: var(--surface); font-weight: 800; }
@@ -116,7 +119,8 @@ footer a { color: var(--blue-600); }
   .site-shell { padding: var(--space-3); }
   .site-header { align-items: start; flex-direction: column; gap: 10px; }
   .freshness { text-align: left; }
-  .date-form label, .periods > span { flex-basis: 100%; }
+  .date-form label, .date-range-title, .periods > span { flex-basis: 100%; }
+  .custom-date-form label { flex-basis: auto; }
   .date-form input { flex: 1; min-width: 160px; }
   .source-note { text-align: left; }
 }

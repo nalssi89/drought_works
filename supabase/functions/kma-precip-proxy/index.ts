@@ -14,26 +14,33 @@ Deno.serve(async (request: Request) => {
   if (api) return proxyApiHub(request, url, api);
   const date = url.searchParams.get("date") ?? "";
   const period = url.searchParams.get("period") ?? "";
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !PERIODS.has(period)) {
+  const start = url.searchParams.get("start") ?? "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || (period === "custom" ? !validCustomRange(start, date) : !PERIODS.has(period))) {
     return Response.json({ error: "invalid date or period" }, { status: 400 });
   }
 
   try {
-    const payload = await ky.post("https://hydro.kma.go.kr/drought/analysisAccData.do", {
+    const custom = period === "custom";
+    const payload = await ky.post(custom ? "https://hydro.kma.go.kr/ext/prec.do" : "https://hydro.kma.go.kr/drought/analysisAccData.do", {
       headers: {
         Accept: "application/json, text/javascript, */*; q=0.01",
         "Accept-Language": "ko-KR,ko;q=0.9",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         Origin: "https://hydro.kma.go.kr",
-        Referer: "https://hydro.kma.go.kr/index.do",
+        Referer: custom ? "https://hydro.kma.go.kr/ext/prec_map.do" : "https://hydro.kma.go.kr/index.do",
         "User-Agent": "Mozilla/5.0 (compatible; KMA-Precipitation-Dashboard/1.0)",
         "X-Requested-With": "XMLHttpRequest",
       },
-      body: new URLSearchParams({ PERIOD: period, search_date: date.replaceAll("-", "") }),
+      body: custom
+        ? new URLSearchParams({ PERIOD: "random", START: start.replaceAll("-", ""), END: date.replaceAll("-", ""), SPOT: "2", DATE: date.replaceAll("-", "") })
+        : new URLSearchParams({ PERIOD: period, search_date: date.replaceAll("-", "") }),
       retry: { limit: 2, methods: ["post"] },
-      timeout: 20_000,
+      timeout: custom ? 60_000 : 20_000,
     }).json<unknown>();
-    if (!isRecord(payload) || !Array.isArray(payload.list1) || !Array.isArray(payload.list2) || !Array.isArray(payload.list_admin)) {
+    const validPayload = custom
+      ? isRecord(payload) && Array.isArray(payload.t1) && Array.isArray(payload.t2) && Array.isArray(payload.t4)
+      : isRecord(payload) && Array.isArray(payload.list1) && Array.isArray(payload.list2) && Array.isArray(payload.list_admin);
+    if (!validPayload) {
       return Response.json({ error: "invalid upstream response" }, { status: 502 });
     }
 
@@ -104,4 +111,10 @@ async function apiText(path: string, searchParams: Record<string, string>): Prom
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validCustomRange(start: string, end: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return false;
+  const elapsedDays = Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000);
+  return elapsedDays >= 0 && elapsedDays <= 366;
 }

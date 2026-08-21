@@ -1,12 +1,14 @@
 import type { Aggregate, DashboardData } from "../lib/precipitation";
 
+type DashboardTableData = Pick<DashboardData, "effectiveDate" | "regions" | "admins" | "stations">;
+
 const REGION_LABELS = [
   "서울·인천\n경기도", "전체", "영서", "영동", "충청북도", "대전·세종\n충청남도", "전북특별\n자치도", "광주·전라남도", "대구·경상북도", "부산·울산\n경상남도", "제주특별\n자치도", "전국",
 ] as const;
 const ADMIN_LABELS = ["중부\n(서울·경기, 강원 전체, 충북, 충남)", "남부\n(전북, 전남, 경북, 경남)", "제주특별자치도", "전국"] as const;
 const NUMBER_FORMATTER = new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
-export function RegionTable({ data }: Readonly<{ data: DashboardData }>) {
+export function RegionTable({ data }: Readonly<{ data: DashboardTableData }>) {
   const denominator = Number(data.effectiveDate.slice(0, 4)) - 1972;
   return (
     <div className="table-scroll region-table-scroll">
@@ -28,7 +30,7 @@ export function RegionTable({ data }: Readonly<{ data: DashboardData }>) {
   );
 }
 
-export function AdminTable({ data }: Readonly<{ data: DashboardData }>) {
+export function AdminTable({ data }: Readonly<{ data: DashboardTableData }>) {
   const denominator = Number(data.effectiveDate.slice(0, 4)) - 1972;
   return (
     <div className="table-scroll admin-table-scroll">
@@ -47,7 +49,7 @@ export function AdminTable({ data }: Readonly<{ data: DashboardData }>) {
   );
 }
 
-export function StationTable({ data }: Readonly<{ data: DashboardData }>) {
+export function StationTable({ data }: Readonly<{ data: DashboardTableData }>) {
   const stations = [...data.stations].sort((left, right) => left.code - right.code);
   return (
     <details className="station-details">

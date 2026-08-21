@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
+import { customPayload, hourlyRow, STATION_CODES } from "./dashboard-fixtures.mjs";
 
 async function render(pathname) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -47,13 +48,101 @@ test("server-renders year-to-date from January 1 and places it after the rolling
   assert.ok(rollingYear >= 0 && rollingYear < yearToDate);
 });
 
+test("server-renders an arbitrary official date range from the KMA proxy", { concurrency: false }, async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    proxyUrl: process.env.KMA_PROXY_URL,
+    proxyKey: process.env.KMA_PROXY_ANON_KEY,
+  };
+  let proxyRequests = 0;
+
+  process.env.KMA_PROXY_URL = "https://proxy.example/official";
+  process.env.KMA_PROXY_ANON_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    assert.equal(url.hostname, "proxy.example");
+    assert.equal(url.searchParams.get("period"), "custom");
+    assert.equal(url.searchParams.get("start"), "2026-02-18");
+    assert.equal(url.searchParams.get("date"), "2026-08-17");
+    proxyRequests += 1;
+    return Response.json(customPayload());
+  };
+
+  try {
+    const response = await render("/?period=custom&start=2026-02-18&date=2026-08-17");
+    const html = await response.text();
+    assert.equal(response.status, 200);
+    assert.match(html, /2026년 02월 18일 ~ 2026년 08월 17일/);
+    assert.match(html, /period=custom/);
+    assert.match(html, /id="start-date"[^>]*value="2026-02-18"/);
+    assert.match(html, />851\.9</);
+    assert.match(html, />1,003\.2</);
+    assert.match(html, />82\.3</);
+    assert.equal(proxyRequests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironment("KMA_PROXY_URL", previousEnvironment.proxyUrl);
+    restoreEnvironment("KMA_PROXY_ANON_KEY", previousEnvironment.proxyKey);
+  }
+});
+
+test("extends an arbitrary range with the selected intraday observation", { concurrency: false }, async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    proxyUrl: process.env.KMA_PROXY_URL,
+    proxyKey: process.env.KMA_PROXY_ANON_KEY,
+    apiKey: process.env.KMA_API_AUTH_KEY,
+  };
+  const normalCodes = new Set(STATION_CODES.map((code) => code === 143 ? 860 : code === 146 ? 864 : code));
+  let customRequests = 0;
+  let hourlyRequests = 0;
+  let normalRequests = 0;
+
+  process.env.KMA_PROXY_URL = "https://proxy.example/official";
+  process.env.KMA_PROXY_ANON_KEY = "test-key";
+  process.env.KMA_API_AUTH_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    assert.equal(url.hostname, "proxy.example");
+    const api = url.searchParams.get("api");
+    if (api === "hourly") {
+      assert.equal(url.searchParams.get("tm"), "202608181800");
+      hourlyRequests += 1;
+      return new Response(STATION_CODES.map((code) => hourlyRow("202608181800", code, 2)).join("\n"));
+    }
+    if (api === "normal") {
+      assert.equal(url.searchParams.get("MM1"), "8");
+      assert.equal(url.searchParams.get("DD1"), "18");
+      normalRequests += 1;
+      return new Response([...normalCodes].map((code) => `2021,${code},8,18,0,0,0,3`).join("\n"));
+    }
+    assert.equal(api, null);
+    assert.equal(url.searchParams.get("period"), "custom");
+    assert.equal(url.searchParams.get("start"), "2026-02-18");
+    assert.equal(url.searchParams.get("date"), "2026-08-17");
+    customRequests += 1;
+    return Response.json(customPayload());
+  };
+
+  try {
+    const response = await render("/?period=custom&start=2026-02-18&intraday=1&time=2026-08-18T18%3A00");
+    const html = await response.text();
+    assert.equal(response.status, 200);
+    assert.doesNotMatch(html, /자료를 표시할 수 없습니다|준비 중입니다/);
+    assert.match(html, /2026년 02월 18일 00시 ~ 2026년 08월 18일 18시/);
+    assert.match(html, /<td>90<\/td><th scope="row">속초<\/th><td>516\.0<\/td><td>717\.0<\/td>/);
+    assert.equal(customRequests, 1);
+    assert.equal(hourlyRequests, 1);
+    assert.equal(normalRequests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironment("KMA_PROXY_URL", previousEnvironment.proxyUrl);
+    restoreEnvironment("KMA_PROXY_ANON_KEY", previousEnvironment.proxyKey);
+    restoreEnvironment("KMA_API_AUTH_KEY", previousEnvironment.apiKey);
+  }
+});
+
 test("explicit intraday hour uses cached data and the server-side APIHub proxy", { concurrency: false }, async () => {
-  const stationCodes = [
-    108, 112, 119, 201, 202, 203, 101, 114, 211, 212, 95, 100, 105, 216, 90, 127, 131,
-    135, 221, 226, 129, 133, 232, 235, 236, 238, 140, 146, 243, 244, 245, 247, 248, 156,
-    165, 168, 170, 260, 261, 262, 130, 136, 138, 143, 271, 272, 273, 277, 278, 279, 281,
-    152, 155, 159, 162, 192, 284, 285, 288, 289, 294, 295, 184, 185, 188, 189,
-  ];
   const originalFetch = globalThis.fetch;
   const previousEnvironment = {
     cacheUrl: process.env.KMA_CACHE_URL,
@@ -67,12 +156,12 @@ test("explicit intraday hour uses cached data and the server-side APIHub proxy",
     effectiveDate: "2026-08-20",
     mode: "official",
     observationTime: null,
-    stations: stationCodes.map((code) => ({ code, name: String(code), normal: 100, precipitation: 50, ratio: 50 })),
+    stations: STATION_CODES.map((code) => ({ code, name: String(code), normal: 100, precipitation: 50, ratio: 50 })),
     regions: [],
     admins: [],
     fetchedAt: "2026-08-20T15:40:02.000Z",
   };
-  const normalCodes = new Set(stationCodes.map((code) => code === 143 ? 860 : code === 146 ? 864 : code));
+  const normalCodes = new Set(STATION_CODES.map((code) => code === 143 ? 860 : code === 146 ? 864 : code));
   let hydroProxyRequests = 0;
   let proxiedHourlyRequests = 0;
   let proxiedDailyRequests = 0;
@@ -91,7 +180,7 @@ test("explicit intraday hour uses cached data and the server-side APIHub proxy",
         proxiedHourlyRequests += 1;
         const observation = url.searchParams.get("tm") ?? "";
         assert.equal(observation, "202608210900", "only the selected end hour should use hourly observations");
-        const rows = stationCodes.map((code) => {
+        const rows = STATION_CODES.map((code) => {
           const fields = Array.from({ length: 17 }, () => "0");
           fields[0] = observation;
           fields[1] = String(code);
@@ -104,7 +193,7 @@ test("explicit intraday hour uses cached data and the server-side APIHub proxy",
         proxiedDailyRequests += 1;
         const date = url.searchParams.get("tm") ?? "";
         assert.equal(date, "20260221", "the removed boundary day should use the official ASOS daily total");
-        return new Response(stationCodes.map((code) => `${date} ${code} 1`).join("\n"));
+        return new Response(STATION_CODES.map((code) => `${date} ${code} 1`).join("\n"));
       }
       if (url.searchParams.get("api") === "normal") {
         proxiedNormalRequests += 1;
