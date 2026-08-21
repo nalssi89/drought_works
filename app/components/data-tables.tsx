@@ -1,4 +1,5 @@
 import type { Aggregate, DashboardData } from "../lib/precipitation";
+import { groupStationsByRegion, ratioCellClass } from "../lib/station-presentation";
 
 type DashboardTableData = Pick<DashboardData, "effectiveDate" | "regions" | "admins" | "stations">;
 
@@ -21,7 +22,7 @@ export function RegionTable({ data }: Readonly<{ data: DashboardTableData }>) {
         <tbody>
           <MetricRow label="강수량 (mm)" cells={data.regions.map((row) => ({ key: row.code, value: format(row.precipitation) }))} />
           <MetricRow label="평년값 (mm)" cells={data.regions.map((row) => ({ key: row.code, value: format(row.normal) }))} />
-          <MetricRow bold label="평년비 (%)" cells={data.regions.map((row) => ({ key: row.code, value: format(row.ratio) }))} />
+          <MetricRow bold label="평년비 (%)" cells={data.regions.map((row) => ({ key: row.code, value: format(row.ratio), className: ratioCellClass(row.ratio) }))} />
           <MetricRow label="강수부족량 (mm)" cells={data.regions.map((row) => ({ key: row.code, value: shortage(row) }))} />
           <MetricRow label="최저순위 (73년이후)" cells={data.regions.map((row) => ({ key: row.code, value: row.rank === null ? "—" : `${row.rank}/${denominator}` }))} />
         </tbody>
@@ -40,7 +41,7 @@ export function AdminTable({ data }: Readonly<{ data: DashboardTableData }>) {
         <tbody>
           <MetricRow label="강수량 (mm)" cells={data.admins.map((row) => ({ key: row.code, value: format(row.precipitation) }))} />
           <MetricRow label="평년값 (mm)" cells={data.admins.map((row) => ({ key: row.code, value: format(row.normal) }))} />
-          <MetricRow bold label="평년비 (%)" cells={data.admins.map((row) => ({ key: row.code, value: format(row.ratio) }))} />
+          <MetricRow bold label="평년비 (%)" cells={data.admins.map((row) => ({ key: row.code, value: format(row.ratio), className: ratioCellClass(row.ratio) }))} />
           <MetricRow label="강수부족량 (mm)" cells={data.admins.map((row) => ({ key: row.code, value: shortage(row) }))} />
           <MetricRow label="최저순위 (73년이후)" cells={data.admins.map((row) => ({ key: row.code, value: row.rank === null ? "—" : `${row.rank}/${denominator}` }))} />
         </tbody>
@@ -50,22 +51,43 @@ export function AdminTable({ data }: Readonly<{ data: DashboardTableData }>) {
 }
 
 export function StationTable({ data }: Readonly<{ data: DashboardTableData }>) {
-  const stations = [...data.stations].sort((left, right) => left.code - right.code);
+  const groups = groupStationsByRegion(data.stations);
   return (
     <details className="station-details">
-      <summary>66개 대표지점 상세 보기</summary>
+      <summary>66개 대표지점 상세 보기 (권역별)</summary>
       <div className="table-scroll">
-        <table className="station-table">
+        <table className="station-table" aria-label="권역별 66개 대표지점 누적강수 상세">
           <thead><tr><th scope="col">지점번호</th><th scope="col">지점명</th><th scope="col">강수량 (mm)</th><th scope="col">평년값 (mm)</th><th scope="col">평년비 (%)</th></tr></thead>
-          <tbody>{stations.map((station) => <tr key={station.code}><td>{station.code}</td><th scope="row">{station.name}</th><td>{format(station.precipitation)}</td><td>{format(station.normal)}</td><td className="ratio-value">{format(station.ratio)}</td></tr>)}</tbody>
+          {groups.map((group) => (
+            <tbody className="station-region-group" key={group.key}>
+              <tr className="station-region-row">
+                <th colSpan={5} scope="rowgroup">
+                  <span className="station-region-heading"><span>{group.label}</span><span className="station-region-count">{group.stations.length}개 지점</span></span>
+                </th>
+              </tr>
+              {group.stations.map((station) => (
+                <tr key={station.code}>
+                  <td>{station.code}</td>
+                  <th scope="row">{station.name}</th>
+                  <td>{format(station.precipitation)}</td>
+                  <td>{format(station.normal)}</td>
+                  <td className={ratioCellClass(station.ratio)}>{format(station.ratio)}</td>
+                </tr>
+              ))}
+            </tbody>
+          ))}
         </table>
       </div>
     </details>
   );
 }
 
-function MetricRow({ bold = false, cells, label }: Readonly<{ bold?: boolean; cells: readonly Readonly<{ key: string; value: string }>[]; label: string }>) {
-  return <tr className={bold ? "ratio-row" : undefined}><th scope="row">{label}</th>{cells.map((cell) => <td key={`${label}-${cell.key}`}>{cell.value}</td>)}</tr>;
+function MetricRow({ bold = false, cells, label }: Readonly<{
+  bold?: boolean;
+  cells: readonly Readonly<{ key: string; value: string; className?: string }>[];
+  label: string;
+}>) {
+  return <tr className={bold ? "ratio-row" : undefined}><th scope="row">{label}</th>{cells.map((cell) => <td className={cell.className} key={`${label}-${cell.key}`}>{cell.value}</td>)}</tr>;
 }
 
 function shortage(row: Aggregate): string {
