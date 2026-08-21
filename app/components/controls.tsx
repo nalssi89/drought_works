@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 import { CUSTOM_PERIOD, defaultCustomStart, type PeriodSelection } from "../lib/custom-period";
+import { customIntradayHref } from "../lib/custom-query";
 import { addDays, addMonths } from "../lib/precipitation";
 
 const PERIOD_OPTIONS = [
@@ -65,7 +66,9 @@ export function Controls({ date, startDate, period, intraday, observationTime, m
           <label className="check-control">
           <input type="checkbox" checked={intraday} onChange={(event) => {
             const href = event.currentTarget.checked
-              ? `/?period=${period}${period === CUSTOM_PERIOD ? `&start=${selectedStartDate}` : ""}&intraday=1`
+              ? period === CUSTOM_PERIOD
+                ? customIntradayHref(date, selectedStartDate, observationTime)
+                : `/?period=${period}&intraday=1`
               : query(date, period, false, null, startDate);
             startTransition(() => router.push(href));
           }} />

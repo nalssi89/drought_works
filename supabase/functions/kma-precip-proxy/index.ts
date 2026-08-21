@@ -15,7 +15,7 @@ Deno.serve(async (request: Request) => {
   const date = url.searchParams.get("date") ?? "";
   const period = url.searchParams.get("period") ?? "";
   const start = url.searchParams.get("start") ?? "";
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || (period === "custom" ? !validCustomRange(start, date) : !PERIODS.has(period))) {
+  if (!validDate(date) || (period === "custom" ? !validCustomRange(start, date) : !PERIODS.has(period))) {
     return Response.json({ error: "invalid date or period" }, { status: 400 });
   }
 
@@ -114,7 +114,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function validCustomRange(start: string, end: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return false;
+  if (!validDate(start)) return false;
   const elapsedDays = Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000);
   return elapsedDays >= 0 && elapsedDays <= 366;
+}
+
+function validDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }

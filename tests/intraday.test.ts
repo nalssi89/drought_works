@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { customIntradayHref } from "../app/lib/custom-query.ts";
 import {
   adjustStation,
   extendStation,
@@ -39,6 +40,13 @@ test("moves the rolling window start to D+1", () => {
 test("starts the year-to-date period on January 1", () => {
   assert.equal(periodStart("2026-08-18", "ty"), "2026-01-01");
   assert.equal(periodStart("2027-01-01", "ty"), "2027-01-01");
+});
+
+test("keeps the arbitrary end date when intraday mode is enabled", () => {
+  assert.equal(
+    customIntradayHref("2026-08-17", "2026-02-18", "2026-08-17T18:00"),
+    "/?date=2026-08-17&period=custom&start=2026-02-18&intraday=1&time=2026-08-17T18%3A00",
+  );
 });
 
 test("reads RN_DAY and treats KMA missing-rain sentinels as zero", () => {
