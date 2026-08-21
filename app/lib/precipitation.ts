@@ -252,7 +252,10 @@ async function loadIntradayDashboard(observationTime: string, period: Period): P
   const effectiveDate = observationTime.slice(0, 10);
   const elapsedHours = Number(observationTime.slice(11, 13));
   const baseDate = addDays(effectiveDate, -1);
-  const base = await loadOne(baseDate, period);
+  const cachedBase = await loadCachedDashboard(period, "official");
+  const base = cachedBase.kind === "ok" && cachedBase.data.effectiveDate === baseDate
+    ? cachedBase
+    : await loadOne(baseDate, period);
   if (base.kind !== "ok") return base;
 
   const startDate = periodStart(effectiveDate, period);

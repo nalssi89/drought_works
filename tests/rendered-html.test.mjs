@@ -47,6 +47,78 @@ test("server-renders year-to-date from January 1 and places it after the rolling
   assert.ok(rollingYear >= 0 && rollingYear < yearToDate);
 });
 
+test("explicit intraday hour uses the matching cached official base", { concurrency: false }, async () => {
+  const stationCodes = [
+    108, 112, 119, 201, 202, 203, 101, 114, 211, 212, 95, 100, 105, 216, 90, 127, 131,
+    135, 221, 226, 129, 133, 232, 235, 236, 238, 140, 146, 243, 244, 245, 247, 248, 156,
+    165, 168, 170, 260, 261, 262, 130, 136, 138, 143, 271, 272, 273, 277, 278, 279, 281,
+    152, 155, 159, 162, 192, 284, 285, 288, 289, 294, 295, 184, 185, 188, 189,
+  ];
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    cacheUrl: process.env.KMA_CACHE_URL,
+    proxyUrl: process.env.KMA_PROXY_URL,
+    proxyKey: process.env.KMA_PROXY_ANON_KEY,
+    apiKey: process.env.KMA_API_AUTH_KEY,
+  };
+  const cached = {
+    schemaVersion: 2,
+    period: "6m",
+    effectiveDate: "2026-08-20",
+    mode: "official",
+    observationTime: null,
+    stations: stationCodes.map((code) => ({ code, name: String(code), normal: 100, precipitation: 50, ratio: 50 })),
+    regions: [],
+    admins: [],
+    fetchedAt: "2026-08-20T15:40:02.000Z",
+  };
+  const normalCodes = new Set(stationCodes.map((code) => code === 143 ? 860 : code === 146 ? 864 : code));
+  let proxyRequests = 0;
+
+  process.env.KMA_CACHE_URL = "https://cache.example/latest";
+  process.env.KMA_PROXY_URL = "https://proxy.example/official";
+  process.env.KMA_PROXY_ANON_KEY = "test-key";
+  process.env.KMA_API_AUTH_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.hostname === "cache.example") return Response.json(cached);
+    if (url.hostname === "proxy.example") {
+      proxyRequests += 1;
+      return Response.json({ list1: [], list2: [], list_admin: [] });
+    }
+    if (url.pathname.endsWith("/kma_sfctm2.php")) {
+      const observation = url.searchParams.get("tm") ?? "";
+      const rows = stationCodes.map((code) => {
+        const fields = Array.from({ length: 17 }, () => "0");
+        fields[0] = observation;
+        fields[1] = String(code);
+        fields[16] = "1";
+        return fields.join(" ");
+      });
+      return new Response(rows.join("\n"));
+    }
+    if (url.pathname.endsWith("/sfc_norm1.php")) {
+      const rows = [...normalCodes].map((code) => `2021,${code},8,21,0,0,0,1`);
+      return new Response(rows.join("\n"));
+    }
+    throw new TypeError(`Unexpected test request: ${url.origin}${url.pathname}`);
+  };
+
+  try {
+    const response = await render("/?period=6m&intraday=1&time=2026-08-21T09%3A00");
+    const html = await response.text();
+    assert.doesNotMatch(html, /2026-08-20 기준 공식 자료가 없습니다/);
+    assert.match(html, /2026년 02월 22일 00시 ~ 2026년 08월 21일 09시/);
+    assert.equal(proxyRequests, 0, "the unavailable Hydro aggregate should not replace a matching official cache");
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironment("KMA_CACHE_URL", previousEnvironment.cacheUrl);
+    restoreEnvironment("KMA_PROXY_URL", previousEnvironment.proxyUrl);
+    restoreEnvironment("KMA_PROXY_ANON_KEY", previousEnvironment.proxyKey);
+    restoreEnvironment("KMA_API_AUTH_KEY", previousEnvironment.apiKey);
+  }
+});
+
 test("keeps production metadata, aligned tables, and removes starter artifacts", async () => {
   const [layout, page, packageJson, styles] = await Promise.all([
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -69,3 +141,8 @@ test("keeps production metadata, aligned tables, and removes starter artifacts",
   assert.match(styles, /@media \(max-width:\s*960px\)[\s\S]*?\.thresholds\s*\{\s*align-self:\s*end;\s*\}/);
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
 });
+
+function restoreEnvironment(key, value) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
