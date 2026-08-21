@@ -2,9 +2,23 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { createClient } from "@supabase/supabase-js";
 import ky from "ky";
-import { completeHourlyObservation } from "../_shared/hourly-observation.ts";
-import { aggregateOfficialStations, extendOfficialStations, finalizeOfficialStations, parseCachePayload, parseOfficialDailyRain } from "./daily-rollover.ts";
-import type { AggregateValue as Aggregate, CachePayload, Mode, StationValue as Station } from "./daily-rollover.ts";
+import {
+  completeHourlyObservation,
+  completeLatestHourlyObservation,
+} from "../_shared/hourly-observation.ts";
+import {
+  aggregateOfficialStations,
+  extendOfficialStations,
+  finalizeOfficialStations,
+  parseCachePayload,
+  parseOfficialDailyRain,
+} from "./daily-rollover.ts";
+import type {
+  AggregateValue as Aggregate,
+  CachePayload,
+  Mode,
+  StationValue as Station,
+} from "./daily-rollover.ts";
 import { OfficialDataUnavailableError, refreshOfficial } from "./official-refresh.ts";
 
 const PERIODS = ["1m", "3m", "6m", "12m", "ty"] as const;
@@ -13,12 +27,24 @@ const NORMAL_CODE = new Map([[143, 860], [146, 864]]);
 const API_BASE = "https://apihub.kma.go.kr/api/typ01/url";
 const HYDRO_URL = "https://hydro.kma.go.kr/drought/analysisAccData.do";
 const KST_FORMATTER = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23",
+  timeZone: "Asia/Seoul",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  hourCycle: "h23",
 });
 
 type Period = typeof PERIODS[number];
 type RollingPeriod = Exclude<Period, "ty">;
 type JsonRecord = Record<string, unknown>;
+
+class LatestHourlyObservationUnavailableError extends Error {
+  constructor(readonly scheduledDate: string, readonly actualObservationTime: string) {
+    super(`latest hourly observation is not available for ${scheduledDate}`);
+    this.name = "LatestHourlyObservationUnavailableError";
+  }
+}
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -54,25 +80,81 @@ function compactTime(value: string): string {
   return value.replaceAll(/[-:T]/g, "");
 }
 
-function normalParams(date: string): Record<string, string> {
-  const [, month, day] = date.split("-");
-  return { norm: "D", tmst: "2021", stn: "0", MM1: String(Number(month)), DD1: String(Number(day)), MM2: String(Number(month)), DD2: String(Number(day)) };
+function expandTime(value: string): string {
+  if (!/^\d{12}$/.test(value)) throw new TypeError("invalid hourly observation time");
+  return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T${value.slice(8, 10)}:00`;
 }
 
-async function apiText(path: string, params: Record<string, string>, authKey: string): Promise<string> {
+function normalParams(date: string): Record<string, string> {
+  const [, month, day] = date.split("-");
+  return {
+    norm: "D",
+    tmst: "2021",
+    stn: "0",
+    MM1: String(Number(month)),
+    DD1: String(Number(day)),
+    MM2: String(Number(month)),
+    DD2: String(Number(day)),
+  };
+}
+
+async function apiText(
+  path: string,
+  params: Record<string, string>,
+  authKey: string,
+  timeout = 20_000,
+): Promise<string> {
   return ky.get(`${API_BASE}/${path}`, {
-    searchParams: { ...params, authKey }, retry: { limit: 2, methods: ["get"] }, timeout: 20_000,
+    searchParams: { ...params, authKey },
+    retry: { limit: 2, methods: ["get"] },
+    timeout,
   }).text();
 }
 
 async function hourlyObservation(observationTime: string, authKey: string) {
   const currentTime = compactTime(observationTime);
-  const currentText = await apiText("kma_sfctm2.php", { tm: currentTime, stn: "0", help: "0" }, authKey);
+  const currentText = await apiText("kma_sfctm2.php", {
+    tm: currentTime,
+    stn: "0",
+    help: "0",
+  }, authKey);
   return completeHourlyObservation({
     observationTime: currentTime,
     currentText,
-    fetchFallbackText: (time, stations) => apiText("kma_sfctm2.php", { tm: time, stn: stations.join(":"), help: "0" }, authKey),
+    fetchFallbackText: (time, stations) => apiText("kma_sfctm2.php", {
+      tm: time,
+      stn: stations.join(":"),
+      help: "0",
+    }, authKey),
   });
+}
+
+async function latestHourlyObservation(authKey: string) {
+  const currentText = await apiText("kma_sfctm2.php", {
+    stn: "0",
+    help: "0",
+  }, authKey);
+  const observation = await completeLatestHourlyObservation({
+    currentText,
+    fetchRangeText: (startTime, endTime, stations) => apiText("kma_sfctm3.php", {
+      tm1: startTime,
+      tm2: endTime,
+      stn: stations.join(":"),
+      help: "0",
+    }, authKey, 60_000),
+  });
+  if (observation.defaultedStations.length > 0) {
+    console.warn(JSON.stringify({
+      event: "kma_hourly_station_defaulted",
+      observationTime: observation.observationTime,
+      stations: observation.defaultedStations,
+      fallback: "zero_current_day_rain",
+    }));
+  }
+  return {
+    ...observation,
+    observationTime: expandTime(observation.observationTime),
+  };
 }
 
 function parseNormals(text: string): Map<number, number> {
@@ -95,24 +177,60 @@ function numeric(value: unknown): number {
 }
 
 function officialAggregate(item: unknown): Aggregate {
-  if (!isRecord(item) || typeof item.brtc_cd !== "string") throw new TypeError("invalid official aggregate");
+  if (!isRecord(item) || typeof item.brtc_cd !== "string") {
+    throw new TypeError("invalid official aggregate");
+  }
   const rank = numeric(item.rank_num);
-  return { code: item.brtc_cd, normal: numeric(item.ny_prcp), precipitation: numeric(item.rn_total), ratio: numeric(item.rn_ratio), rank: rank > 0 ? rank : null };
+  return {
+    code: item.brtc_cd,
+    normal: numeric(item.ny_prcp),
+    precipitation: numeric(item.rn_total),
+    ratio: numeric(item.rn_ratio),
+    rank: rank > 0 ? rank : null,
+  };
 }
 
-async function officialData(date: string, period: Period): Promise<Readonly<{ stations: readonly Station[]; regions: readonly Aggregate[]; admins: readonly Aggregate[] }>> {
+async function officialData(
+  date: string,
+  period: Period,
+): Promise<Readonly<{ stations: readonly Station[]; regions: readonly Aggregate[]; admins: readonly Aggregate[] }>> {
   const value = await ky.post(HYDRO_URL, {
     body: new URLSearchParams({ PERIOD: period, search_date: date.replaceAll("-", "") }),
-    headers: { Accept: "application/json, text/javascript, */*; q=0.01", Origin: "https://hydro.kma.go.kr", Referer: "https://hydro.kma.go.kr/index.do", "User-Agent": "Mozilla/5.0 (compatible; KMA-Precipitation-Dashboard/1.0)", "X-Requested-With": "XMLHttpRequest" },
-    retry: { limit: 2, methods: ["post"] }, timeout: 20_000,
+    headers: {
+      Accept: "application/json, text/javascript, */*; q=0.01",
+      Origin: "https://hydro.kma.go.kr",
+      Referer: "https://hydro.kma.go.kr/index.do",
+      "User-Agent": "Mozilla/5.0 (compatible; KMA-Precipitation-Dashboard/1.0)",
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    retry: { limit: 2, methods: ["post"] },
+    timeout: 20_000,
   }).json<unknown>();
-  const validRegions = isRecord(value) && Array.isArray(value.list1) && (period === "ty" ? value.list1.length === 0 : value.list1.length === 12);
-  if (!validRegions || !Array.isArray(value.list2) || value.list2.length !== 66 || !Array.isArray(value.list_admin) || value.list_admin.length !== 4) throw new OfficialDataUnavailableError();
+  const validRegions = isRecord(value)
+    && Array.isArray(value.list1)
+    && (period === "ty" ? value.list1.length === 0 : value.list1.length === 12);
+  if (
+    !validRegions
+    || !Array.isArray(value.list2)
+    || value.list2.length !== 66
+    || !Array.isArray(value.list_admin)
+    || value.list_admin.length !== 4
+  ) throw new OfficialDataUnavailableError();
   const stations = value.list2.map((item) => {
-    if (!isRecord(item) || typeof item.stn_cd !== "number" || typeof item.stn_nm !== "string") throw new TypeError("invalid official station");
-    return { code: item.stn_cd, name: item.stn_nm, normal: numeric(item.ny_prcp), precipitation: numeric(item.rn_total), ratio: numeric(item.rn_ratio_sort) };
+    if (!isRecord(item) || typeof item.stn_cd !== "number" || typeof item.stn_nm !== "string") {
+      throw new TypeError("invalid official station");
+    }
+    return {
+      code: item.stn_cd,
+      name: item.stn_nm,
+      normal: numeric(item.ny_prcp),
+      precipitation: numeric(item.rn_total),
+      ratio: numeric(item.rn_ratio_sort),
+    };
   });
-  const regions = period === "ty" ? aggregateOfficialStations(stations).regions : value.list1.map(officialAggregate);
+  const regions = period === "ty"
+    ? aggregateOfficialStations(stations).regions
+    : value.list1.map(officialAggregate);
   return { stations, regions, admins: value.list_admin.map(officialAggregate) };
 }
 
@@ -122,12 +240,33 @@ function required(values: ReadonlyMap<number, number>, code: number, label: stri
   return value;
 }
 
-function adjust(base: readonly Station[], startRain: ReadonlyMap<number, number>, endRain: ReadonlyMap<number, number>, startNormal: ReadonlyMap<number, number>, endNormal: ReadonlyMap<number, number>): readonly Station[] {
+function adjust(
+  base: readonly Station[],
+  startRain: ReadonlyMap<number, number>,
+  endRain: ReadonlyMap<number, number>,
+  startNormal: ReadonlyMap<number, number>,
+  endNormal: ReadonlyMap<number, number>,
+): readonly Station[] {
   return base.map((station) => {
     const normalCode = NORMAL_CODE.get(station.code) ?? station.code;
-    const precipitation = round1(Math.max(0, station.precipitation - required(startRain, station.code, "start rain") + required(endRain, station.code, "end rain")));
-    const normal = round1(Math.max(0, station.normal - required(startNormal, normalCode, "start normal") + required(endNormal, normalCode, "end normal")));
-    return { ...station, precipitation, normal, ratio: normal > 0 ? round1(precipitation / normal * 100) : 0 };
+    const precipitation = round1(Math.max(
+      0,
+      station.precipitation
+        - required(startRain, station.code, "start rain")
+        + required(endRain, station.code, "end rain"),
+    ));
+    const normal = round1(Math.max(
+      0,
+      station.normal
+        - required(startNormal, normalCode, "start normal")
+        + required(endNormal, normalCode, "end normal"),
+    ));
+    return {
+      ...station,
+      precipitation,
+      normal,
+      ratio: normal > 0 ? round1(precipitation / normal * 100) : 0,
+    };
   });
 }
 
@@ -135,8 +274,27 @@ function round1(value: number): number {
   return Math.round((value + Number.EPSILON) * 10) / 10;
 }
 
-function payload(period: Period, effectiveDate: string, mode: Mode, observationTime: string | null, stations: readonly Station[], regions: readonly Aggregate[] = [], admins: readonly Aggregate[] = []): CachePayload {
-  return { schemaVersion: 2, period, effectiveDate, mode, observationTime, stations, regions, admins, fetchedAt: new Date().toISOString(), source: mode === "official" ? "hydro" : "intraday" };
+function payload(
+  period: Period,
+  effectiveDate: string,
+  mode: Mode,
+  observationTime: string | null,
+  stations: readonly Station[],
+  regions: readonly Aggregate[] = [],
+  admins: readonly Aggregate[] = [],
+): CachePayload {
+  return {
+    schemaVersion: 2,
+    period,
+    effectiveDate,
+    mode,
+    observationTime,
+    stations,
+    regions,
+    admins,
+    fetchedAt: new Date().toISOString(),
+    source: mode === "official" ? "hydro" : "intraday",
+  };
 }
 
 function client() {
@@ -150,20 +308,29 @@ async function boundaryData(period: RollingPeriod, effectiveDate: string, authKe
   const startDate = periodStart(effectiveDate, period);
   const removedDate = addDays(startDate, -1);
   const [removedRain, removedNormal] = await Promise.all([
-    apiText("kma_sfcdd.php", { tm: removedDate.replaceAll("-", ""), stn: "0", disp: "0", help: "0" }, authKey).then((text) => parseOfficialDailyRain(text, removedDate)),
+    apiText("kma_sfcdd.php", {
+      tm: removedDate.replaceAll("-", ""),
+      stn: "0",
+      disp: "0",
+      help: "0",
+    }, authKey).then((text) => parseOfficialDailyRain(text, removedDate)),
     apiText("sfc_norm1.php", normalParams(removedDate), authKey).then(parseNormals),
   ]);
   return { removedRain, removedNormal };
 }
 
-async function updateOfficial(supabase: ReturnType<typeof client>, midnight: string): Promise<void> {
+async function updateOfficial(
+  supabase: ReturnType<typeof client>,
+  midnight: string,
+): Promise<void> {
   const effectiveDate = addDays(midnight.slice(0, 10), -1);
   const inputs = await Promise.all(PERIODS.map(async (period) => ({
     period,
     data: await officialData(effectiveDate, period),
   })));
   const rows = inputs.map(({ period, data }) => ({
-    cache_key: `official:${period}`, observation_time: midnight,
+    cache_key: `official:${period}`,
+    observation_time: midnight,
     payload: payload(period, effectiveDate, "official", null, data.stations, data.regions, data.admins),
     refreshed_at: new Date().toISOString(),
   }));
@@ -171,13 +338,22 @@ async function updateOfficial(supabase: ReturnType<typeof client>, midnight: str
   if (error) throw new TypeError("official cache update failed");
 }
 
-async function updateOfficialFromDaily(supabase: ReturnType<typeof client>, midnight: string, authKey: string): Promise<void> {
+async function updateOfficialFromDaily(
+  supabase: ReturnType<typeof client>,
+  midnight: string,
+  authKey: string,
+): Promise<void> {
   const effectiveDate = addDays(midnight.slice(0, 10), -1);
   const observationTime = `${effectiveDate}T23:00`;
   const [cache, hourly, dailyTextValue] = await Promise.all([
     supabase.from("kma_precip_cache").select("cache_key,payload").like("cache_key", "intraday:%"),
     hourlyObservation(observationTime, authKey),
-    apiText("kma_sfcdd.php", { tm: effectiveDate.replaceAll("-", ""), stn: "0", disp: "0", help: "0" }, authKey),
+    apiText("kma_sfcdd.php", {
+      tm: effectiveDate.replaceAll("-", ""),
+      stn: "0",
+      disp: "0",
+      help: "0",
+    }, authKey),
   ]);
   if (cache.error || !cache.data) throw new TypeError("intraday cache lookup failed");
   if (cache.data.length !== PERIODS.length) throw new OfficialDataUnavailableError();
@@ -185,12 +361,19 @@ async function updateOfficialFromDaily(supabase: ReturnType<typeof client>, midn
   const hourlyRain = hourly.rain;
   const dailyRain = parseOfficialDailyRain(dailyTextValue, effectiveDate);
   const rows = PERIODS.map((period) => {
-    const base = parseCachePayload(bases.get(`intraday:${period}`), { period, effectiveDate, mode: "intraday" });
+    const base = parseCachePayload(bases.get(`intraday:${period}`), {
+      period,
+      effectiveDate,
+      mode: "intraday",
+    });
     const finalized = finalizeOfficialStations({ ...base, hourlyRain, dailyRain });
     return {
       cache_key: `official:${period}`,
       observation_time: midnight,
-      payload: { ...payload(period, effectiveDate, "official", null, finalized.stations, finalized.regions, finalized.admins), source: "daily" },
+      payload: {
+        ...payload(period, effectiveDate, "official", null, finalized.stations, finalized.regions, finalized.admins),
+        source: "daily" as const,
+      },
       refreshed_at: new Date().toISOString(),
     };
   });
@@ -198,32 +381,64 @@ async function updateOfficialFromDaily(supabase: ReturnType<typeof client>, midn
   if (error) throw new TypeError("daily official cache update failed");
 }
 
-async function updateIntraday(supabase: ReturnType<typeof client>, observationTime: string, authKey: string): Promise<void> {
+async function updateIntraday(
+  supabase: ReturnType<typeof client>,
+  scheduledDate: string,
+  authKey: string,
+): Promise<string> {
+  const hourly = await latestHourlyObservation(authKey);
+  const observationTime = hourly.observationTime;
+  if (observationTime.slice(0, 10) !== scheduledDate) {
+    throw new LatestHourlyObservationUnavailableError(scheduledDate, observationTime);
+  }
+
   const effectiveDate = observationTime.slice(0, 10);
   const baseDate = addDays(effectiveDate, -1);
-  const { data, error } = await supabase.from("kma_precip_cache").select("cache_key,payload").like("cache_key", "official:%");
+  const { data, error } = await supabase
+    .from("kma_precip_cache")
+    .select("cache_key,payload")
+    .like("cache_key", "official:%");
   if (error || !data) throw new TypeError("official cache lookup failed");
   const officialBases = new Map(data.map((row) => [row.cache_key, row.payload]));
-  const [endRain, endNormal, periodBases] = await Promise.all([
-    hourlyObservation(observationTime, authKey).then((observation) => observation.rain),
+  const [endNormal, periodBases] = await Promise.all([
     apiText("sfc_norm1.php", normalParams(effectiveDate), authKey).then(parseNormals),
     Promise.all(PERIODS.map(async (period) => {
-      const base = parseCachePayload(officialBases.get(`official:${period}`), { period, effectiveDate: baseDate, mode: "official" });
+      const base = parseCachePayload(officialBases.get(`official:${period}`), {
+        period,
+        effectiveDate: baseDate,
+        mode: "official",
+      });
       return { period, base };
     })),
   ]);
   const rows = await Promise.all(periodBases.map(async ({ period, base }) => {
     const stations = period === "ty"
-      ? extendOfficialStations(base.stations, endRain, endNormal)
-      : await boundaryData(period, effectiveDate, authKey).then((boundary) => adjust(base.stations, boundary.removedRain, endRain, boundary.removedNormal, endNormal));
+      ? extendOfficialStations(base.stations, hourly.rain, endNormal)
+      : await boundaryData(period, effectiveDate, authKey).then((boundary) => adjust(
+        base.stations,
+        boundary.removedRain,
+        hourly.rain,
+        boundary.removedNormal,
+        endNormal,
+      ));
     return {
-      cache_key: `intraday:${period}`, observation_time: observationTime,
-      payload: payload(period, effectiveDate, "intraday", observationTime, stations, base.regions, base.admins),
+      cache_key: `intraday:${period}`,
+      observation_time: observationTime,
+      payload: payload(
+        period,
+        effectiveDate,
+        "intraday",
+        observationTime,
+        stations,
+        base.regions,
+        base.admins,
+      ),
       refreshed_at: new Date().toISOString(),
     };
   }));
   const { error: upsertError } = await supabase.from("kma_precip_cache").upsert(rows);
   if (upsertError) throw new TypeError("intraday cache update failed");
+  return observationTime;
 }
 
 Deno.serve(async (request: Request) => {
@@ -233,41 +448,88 @@ Deno.serve(async (request: Request) => {
       const url = new URL(request.url);
       const period = PERIODS.find((value) => value === url.searchParams.get("period"));
       const mode = url.searchParams.get("mode");
-      if (!period || (mode !== "official" && mode !== "intraday")) return Response.json({ error: "invalid query" }, { status: 400 });
-      const { data, error } = await supabase.from("kma_precip_cache").select("payload").eq("cache_key", `${mode}:${period}`).maybeSingle();
+      if (!period || (mode !== "official" && mode !== "intraday")) {
+        return Response.json({ error: "invalid query" }, { status: 400 });
+      }
+      const { data, error } = await supabase
+        .from("kma_precip_cache")
+        .select("payload")
+        .eq("cache_key", `${mode}:${period}`)
+        .maybeSingle();
       if (error) throw new TypeError("cache lookup failed");
       if (!data) return Response.json({ error: "cache is not ready" }, { status: 503 });
-      return Response.json(data.payload, { headers: { "Cache-Control": "public, max-age=60" } });
+      return Response.json(data.payload, {
+        headers: { "Cache-Control": "public, max-age=60" },
+      });
     }
+
     if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
     const authKey = request.headers.get("x-kma-auth");
     if (!authKey || authKey.length < 16) return new Response("unauthorized", { status: 401 });
-    const observationTime = kstHour();
-    const hour = Number(observationTime.slice(11, 13));
+
+    const scheduledObservationTime = kstHour();
+    const scheduledDate = scheduledObservationTime.slice(0, 10);
+    const hour = Number(scheduledObservationTime.slice(11, 13));
     const forceOfficial = new URL(request.url).searchParams.get("refresh") === "official";
-    const midnight = `${observationTime.slice(0, 10)}T00:00`;
+    const midnight = `${scheduledDate}T00:00`;
+
     if (hour === 0 || forceOfficial) {
       const result = await refreshOfficial(
         () => updateOfficial(supabase, midnight),
         () => updateOfficialFromDaily(supabase, midnight, authKey),
       );
-      if (result === "deferred") return Response.json({ status: "deferred", reason: "official data not ready", observationTime }, { status: 202 });
-    }
-    else {
-      const expectedBaseDate = addDays(observationTime.slice(0, 10), -1);
-      const { data } = await supabase.from("kma_precip_cache").select("payload").eq("cache_key", "official:6m").maybeSingle();
-      if (!data || !isRecord(data.payload) || data.payload.effectiveDate !== expectedBaseDate) {
-        const result = await refreshOfficial(
-          () => updateOfficial(supabase, midnight),
-          () => updateOfficialFromDaily(supabase, midnight, authKey),
-        );
-        if (result === "deferred") return Response.json({ status: "deferred", reason: "official data not ready", observationTime }, { status: 202 });
+      if (result === "deferred") {
+        return Response.json({
+          status: "deferred",
+          reason: "official data not ready",
+          observationTime: scheduledObservationTime,
+        }, { status: 202 });
       }
-      else if (data.payload.source === "daily") await refreshOfficial(() => updateOfficial(supabase, midnight));
-      await updateIntraday(supabase, observationTime, authKey);
+      return Response.json({
+        status: "updated",
+        mode: "official",
+        observationTime: scheduledObservationTime,
+      });
     }
-    return Response.json({ status: "updated", mode: hour === 0 || forceOfficial ? "official" : "intraday", observationTime });
+
+    const expectedBaseDate = addDays(scheduledDate, -1);
+    const { data } = await supabase
+      .from("kma_precip_cache")
+      .select("payload")
+      .eq("cache_key", "official:6m")
+      .maybeSingle();
+    if (!data || !isRecord(data.payload) || data.payload.effectiveDate !== expectedBaseDate) {
+      const result = await refreshOfficial(
+        () => updateOfficial(supabase, midnight),
+        () => updateOfficialFromDaily(supabase, midnight, authKey),
+      );
+      if (result === "deferred") {
+        return Response.json({
+          status: "deferred",
+          reason: "official data not ready",
+          observationTime: scheduledObservationTime,
+        }, { status: 202 });
+      }
+    }
+    else if (data.payload.source === "daily") {
+      await refreshOfficial(() => updateOfficial(supabase, midnight));
+    }
+
+    const observationTime = await updateIntraday(supabase, scheduledDate, authKey);
+    return Response.json({ status: "updated", mode: "intraday", observationTime });
   } catch (error) {
+    if (error instanceof LatestHourlyObservationUnavailableError) {
+      console.warn(JSON.stringify({
+        event: "kma_hourly_cache_deferred",
+        scheduledDate: error.scheduledDate,
+        actualObservationTime: error.actualObservationTime,
+      }));
+      return Response.json({
+        status: "deferred",
+        reason: "current-day hourly data not ready",
+        observationTime: error.actualObservationTime,
+      }, { status: 202 });
+    }
     const message = error instanceof Error ? error.message : "unknown failure";
     console.error(JSON.stringify({ event: "kma_hourly_cache_failure", message }));
     return Response.json({ error: "refresh unavailable" }, { status: 502 });

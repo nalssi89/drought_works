@@ -11,8 +11,12 @@ export const REPRESENTATIVE_STATIONS: readonly number[] = [
   184, 185, 188, 189,
 ];
 
+const REPRESENTATIVE_STATION_SET = new Set(REPRESENTATIVE_STATIONS);
+
 type HourlyRow = Readonly<{
   line: string;
+  observationTime: string;
+  station: number;
   rain: number;
 }>;
 
@@ -22,10 +26,26 @@ type CompleteHourlyObservationInput = Readonly<{
   fetchFallbackText: (observationTime: string, stations: readonly number[]) => Promise<string>;
 }>;
 
+type CompleteLatestHourlyObservationInput = Readonly<{
+  currentText: string;
+  fetchRangeText: (
+    startTime: string,
+    endTime: string,
+    stations: readonly number[],
+  ) => Promise<string>;
+}>;
+
 export type CompleteHourlyObservation = Readonly<{
   text: string;
   rain: ReadonlyMap<number, number>;
   carriedFrom: ReadonlyMap<number, string>;
+}>;
+
+export type CompleteLatestHourlyObservation = Readonly<{
+  observationTime: string;
+  rain: ReadonlyMap<number, number>;
+  carriedFrom: ReadonlyMap<number, string>;
+  defaultedStations: readonly number[];
 }>;
 
 export class IncompleteHourlyObservationError extends Error {
@@ -81,15 +101,78 @@ export async function completeHourlyObservation(
   return { text, rain, carriedFrom };
 }
 
+export async function completeLatestHourlyObservation(
+  input: CompleteLatestHourlyObservationInput,
+): Promise<CompleteLatestHourlyObservation> {
+  const currentRecords = parseHourlyRecords(input.currentText);
+  const observationTime = currentRecords.reduce(
+    (latest, row) => row.observationTime > latest ? row.observationTime : latest,
+    "",
+  );
+  if (!observationTime) {
+    throw new IncompleteHourlyObservationError("latest", REPRESENTATIVE_STATIONS);
+  }
+
+  const selected = new Map<number, HourlyRow>();
+  for (const row of currentRecords) {
+    if (row.observationTime === observationTime && REPRESENTATIVE_STATION_SET.has(row.station)) {
+      selected.set(row.station, row);
+    }
+  }
+
+  let missingStations = REPRESENTATIVE_STATIONS.filter((station) => !selected.has(station));
+  const carriedFrom = new Map<number, string>();
+  if (missingStations.length > 0) {
+    const startTime = `${observationTime.slice(0, 8)}0000`;
+    const fallbackText = await input.fetchRangeText(startTime, observationTime, missingStations);
+    const fallbackRecords = parseHourlyRecords(fallbackText)
+      .filter((row) => row.observationTime.slice(0, 8) === observationTime.slice(0, 8));
+    const latestByStation = new Map<number, HourlyRow>();
+    for (const row of fallbackRecords) {
+      if (!missingStations.includes(row.station)) continue;
+      const previous = latestByStation.get(row.station);
+      if (!previous || row.observationTime > previous.observationTime) latestByStation.set(row.station, row);
+    }
+    for (const station of missingStations) {
+      const row = latestByStation.get(station);
+      if (!row) continue;
+      selected.set(station, row);
+      carriedFrom.set(station, row.observationTime);
+    }
+    missingStations = REPRESENTATIVE_STATIONS.filter((station) => !selected.has(station));
+  }
+
+  const rain = new Map<number, number>();
+  for (const station of REPRESENTATIVE_STATIONS) {
+    rain.set(station, selected.get(station)?.rain ?? 0);
+  }
+
+  return {
+    observationTime,
+    rain,
+    carriedFrom,
+    defaultedStations: missingStations,
+  };
+}
+
 function parseHourlyRows(text: string, observationTime: string): Map<number, HourlyRow> {
   const rows = new Map<number, HourlyRow>();
+  for (const row of parseHourlyRecords(text)) {
+    if (row.observationTime === observationTime) rows.set(row.station, row);
+  }
+  return rows;
+}
+
+function parseHourlyRecords(text: string): HourlyRow[] {
+  const rows: HourlyRow[] = [];
   for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith(`${observationTime} `)) continue;
+    if (!/^\d{12}\s/.test(line)) continue;
     const fields = line.trim().split(/\s+/);
+    const observationTime = fields[0];
     const station = Number(fields[1]);
     const rain = Number(fields[16]);
-    if (Number.isInteger(station) && Number.isFinite(rain)) {
-      rows.set(station, { line, rain: Math.max(0, rain) });
+    if (observationTime && Number.isInteger(station) && Number.isFinite(rain)) {
+      rows.push({ line, observationTime, station, rain: Math.max(0, rain) });
     }
   }
   return rows;

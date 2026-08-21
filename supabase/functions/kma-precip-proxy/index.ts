@@ -32,7 +32,7 @@ Deno.serve(async (request: Request) => {
         "X-Requested-With": "XMLHttpRequest",
       },
       body: custom
-        ? new URLSearchParams({ PERIOD: "random", START: start.replaceAll("-", ""), END: date.replaceAll("-", ""), SPOT: "2", DATE: date.replaceAll("-", "") })
+        ? new URLSearchParams({ PERIOD: "random", START: start.replaceAll("-", ""), END: date.replaceAll("-", ""), SPOT: "2", DATE: date.replaceAll("-", ""), })
         : new URLSearchParams({ PERIOD: period, search_date: date.replaceAll("-", "") }),
       retry: { limit: 2, methods: ["post"] },
       timeout: custom ? 60_000 : 20_000,
@@ -56,6 +56,28 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
   if (!authKey || authKey.length < 16) return new Response("unauthorized", { status: 401 });
 
   try {
+    if (api === "hourly-latest") {
+      const stn = url.searchParams.get("stn") ?? "0";
+      if (!/^\d+(?::\d+)*$/.test(stn)) return Response.json({ error: "invalid station query" }, { status: 400 });
+      const text = await apiText("kma_sfctm2.php", { stn, help: "0", authKey });
+      return new Response(text, {
+        headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+
+    if (api === "hourly-range") {
+      const tm1 = url.searchParams.get("tm1") ?? "";
+      const tm2 = url.searchParams.get("tm2") ?? "";
+      const stn = url.searchParams.get("stn") ?? "0";
+      if (!/^\d{12}$/.test(tm1) || !/^\d{12}$/.test(tm2) || tm1 > tm2 || !/^\d+(?::\d+)*$/.test(stn)) {
+        return Response.json({ error: "invalid hourly range query" }, { status: 400 });
+      }
+      const text = await apiText("kma_sfctm3.php", { tm1, tm2, stn, help: "0", authKey }, 60_000);
+      return new Response(text, {
+        headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+
     if (api === "hourly") {
       const tm = url.searchParams.get("tm") ?? "";
       if (!/^\d{12}$/.test(tm)) return Response.json({ error: "invalid hourly query" }, { status: 400 });
