@@ -1,6 +1,6 @@
 import ky, { HTTPError, TimeoutError } from "ky";
 import { z } from "zod";
-import { fetchDailyNormals, fetchHourlyDailyRain } from "./api-hub";
+import { fetchDailyNormals, fetchHourlyDailyRain, fetchOfficialDailyRain } from "./api-hub";
 import {
   adjustStations,
   aggregateStations,
@@ -267,7 +267,7 @@ async function loadIntradayDashboard(observationTime: string, period: Period): P
     const stations = period === "ty"
       ? extendStations(base.data.stations, endRain, endNormals)
       : await Promise.all([
-        fetchHourlyDailyRain(`${startDate}T00:00`),
+        fetchOfficialDailyRain(addDays(startDate, -1)),
         fetchDailyNormals(addDays(startDate, -1)),
       ]).then(([startRain, startNormals]) => adjustStations(base.data.stations, startRain, endRain, startNormals, endNormals));
     const calculated = aggregateStations(stations);

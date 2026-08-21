@@ -74,7 +74,9 @@ test("explicit intraday hour uses cached data and the server-side APIHub proxy",
   };
   const normalCodes = new Set(stationCodes.map((code) => code === 143 ? 860 : code === 146 ? 864 : code));
   let hydroProxyRequests = 0;
-  let proxiedApiRequests = 0;
+  let proxiedHourlyRequests = 0;
+  let proxiedDailyRequests = 0;
+  let proxiedNormalRequests = 0;
   let directApiRequests = 0;
 
   process.env.KMA_CACHE_URL = "https://cache.example/latest";
@@ -86,8 +88,9 @@ test("explicit intraday hour uses cached data and the server-side APIHub proxy",
     if (url.hostname === "cache.example") return Response.json(cached);
     if (url.hostname === "proxy.example") {
       if (url.searchParams.get("api") === "hourly") {
-        proxiedApiRequests += 1;
+        proxiedHourlyRequests += 1;
         const observation = url.searchParams.get("tm") ?? "";
+        assert.equal(observation, "202608210900", "only the selected end hour should use hourly observations");
         const rows = stationCodes.map((code) => {
           const fields = Array.from({ length: 17 }, () => "0");
           fields[0] = observation;
@@ -97,8 +100,14 @@ test("explicit intraday hour uses cached data and the server-side APIHub proxy",
         });
         return new Response(rows.join("\n"));
       }
+      if (url.searchParams.get("api") === "daily") {
+        proxiedDailyRequests += 1;
+        const date = url.searchParams.get("tm") ?? "";
+        assert.equal(date, "20260221", "the removed boundary day should use the official ASOS daily total");
+        return new Response(stationCodes.map((code) => `${date} ${code} 1`).join("\n"));
+      }
       if (url.searchParams.get("api") === "normal") {
-        proxiedApiRequests += 1;
+        proxiedNormalRequests += 1;
         const rows = [...normalCodes].map((code) => `2021,${code},8,21,0,0,0,1`);
         return new Response(rows.join("\n"));
       }
@@ -118,7 +127,9 @@ test("explicit intraday hour uses cached data and the server-side APIHub proxy",
     assert.doesNotMatch(html, /2026-08-20 기준 공식 자료가 없습니다/);
     assert.match(html, /2026년 02월 22일 00시 ~ 2026년 08월 21일 09시/);
     assert.equal(hydroProxyRequests, 0, "the unavailable Hydro aggregate should not replace a matching official cache");
-    assert.equal(proxiedApiRequests, 4, "hourly rain and normals should use the Supabase server proxy");
+    assert.equal(proxiedHourlyRequests, 1, "only the selected end hour should use hourly observations");
+    assert.equal(proxiedDailyRequests, 1, "the removed boundary day should use ASOS daily observations");
+    assert.equal(proxiedNormalRequests, 2, "both boundary normals should use the Supabase server proxy");
     assert.equal(directApiRequests, 0, "the Sites worker should not call APIHub directly");
   } finally {
     globalThis.fetch = originalFetch;

@@ -1,6 +1,6 @@
 import ky from "ky";
 
-import { parseDailyNormals, parseHourlyDailyRain } from "./intraday";
+import { parseDailyNormals, parseHourlyDailyRain, parseOfficialDailyRain } from "./intraday";
 
 const API_BASE = "https://apihub.kma.go.kr/api/typ01/url";
 
@@ -27,12 +27,22 @@ export async function fetchDailyNormals(date: string): Promise<Map<number, numbe
   return parseDailyNormals(text);
 }
 
+export async function fetchOfficialDailyRain(date: string): Promise<Map<number, number>> {
+  const text = await request("kma_sfcdd.php", {
+    tm: date.replaceAll("-", ""),
+    stn: "0",
+    disp: "0",
+    help: "0",
+  });
+  return parseOfficialDailyRain(text, date);
+}
+
 async function request(path: string, searchParams: Record<string, string>): Promise<string> {
   const authKey = process.env.KMA_API_AUTH_KEY;
   if (!authKey) throw new TypeError("KMA APIHub 인증키가 설정되지 않았습니다.");
   const proxyUrl = process.env.KMA_PROXY_URL;
   const proxyKey = process.env.KMA_PROXY_ANON_KEY;
-  const api = path === "kma_sfctm2.php" ? "hourly" : "normal";
+  const api = path === "kma_sfctm2.php" ? "hourly" : path === "kma_sfcdd.php" ? "daily" : "normal";
   if (proxyUrl && proxyKey) {
     return ky.get(proxyUrl, {
       searchParams: { api, ...searchParams },

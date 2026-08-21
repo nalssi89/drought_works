@@ -67,6 +67,19 @@ export function parseHourlyDailyRain(text: string): Map<number, number> {
   return result;
 }
 
+export function parseOfficialDailyRain(text: string, date: string): Map<number, number> {
+  const result = new Map<number, number>();
+  const compactDate = date.replaceAll("-", "");
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith(`${compactDate} `)) continue;
+    const fields = line.trim().split(/\s+/);
+    const station = Number(fields[1]);
+    const dailyRain = Number(fields[2]);
+    if (Number.isInteger(station) && Number.isFinite(dailyRain)) result.set(station, Math.max(0, dailyRain));
+  }
+  return result;
+}
+
 export function parseDailyNormals(text: string): Map<number, number> {
   const result = new Map<number, number>();
   for (const line of text.split(/\r?\n/)) {

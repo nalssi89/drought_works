@@ -55,6 +55,12 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
     path = "kma_sfctm2.php";
     searchParams = { tm, stn: "0", help: "0", authKey };
   }
+  else if (api === "daily") {
+    const tm = url.searchParams.get("tm") ?? "";
+    if (!/^\d{8}$/.test(tm)) return Response.json({ error: "invalid daily query" }, { status: 400 });
+    path = "kma_sfcdd.php";
+    searchParams = { tm, stn: "0", disp: "0", help: "0", authKey };
+  }
   else if (api === "normal") {
     const month = url.searchParams.get("MM1") ?? "";
     const day = url.searchParams.get("DD1") ?? "";
