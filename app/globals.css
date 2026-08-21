@@ -90,6 +90,9 @@ tbody th { background: var(--surface-subtle); color: var(--navy-900); text-align
 .region-matrix tbody th { width: 190px; text-align: center; }
 .admin-matrix tbody th { width: 220px; text-align: center; }
 .ratio-row td { color: var(--navy-900); font-weight: 800; }
+.ratio-threshold-65 { background: var(--threshold-65); }
+.ratio-threshold-55 { background: var(--threshold-55); }
+.ratio-threshold-45 { background: var(--threshold-45); }
 .admin-table-scroll { margin-top: 12px; }
 .admin-matrix { min-width: 760px; table-layout: fixed; }
 .admin-matrix .metric-column { width: 220px; }
@@ -102,6 +105,22 @@ tbody th { background: var(--surface-subtle); color: var(--navy-900); text-align
 .station-table thead { position: sticky; top: 0; z-index: 2; }
 .station-table th:nth-child(2) { text-align: left; }
 .station-table tbody th { background: var(--surface); }
+.station-region-group:not(:last-of-type) tr:last-child th,
+.station-region-group:not(:last-of-type) tr:last-child td { border-bottom: 1px solid var(--line); }
+.station-region-row th {
+  position: static;
+  left: auto;
+  z-index: auto;
+  height: 36px;
+  padding: 8px 12px;
+  border-top: 2px solid var(--navy-800);
+  background: var(--surface-info);
+  color: var(--navy-900);
+  text-align: left;
+}
+.station-region-group:first-of-type .station-region-row th { border-top: 0; }
+.station-region-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.station-region-count { color: var(--muted); font-size: var(--font-caption); font-weight: 600; white-space: nowrap; }
 .ratio-value { color: var(--navy-900); font-weight: 800; }
 .error-panel { margin-top: 28px; padding: 24px; border: 1px solid var(--line); background: var(--surface-subtle); }
 .error-panel h2 { margin-top: 0; color: var(--navy-900); }
