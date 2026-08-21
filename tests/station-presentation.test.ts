@@ -6,6 +6,7 @@ import {
   groupStationsByRegion,
   ratioCellClass,
   ratioThresholdClass,
+  stationRegionKey,
 } from "../app/lib/station-presentation.ts";
 
 test("groups all 66 representative stations into the dashboard regions", () => {
@@ -31,6 +32,9 @@ test("groups all 66 representative stations into the dashboard regions", () => {
   assert.deepEqual(groups[0]?.stations.map((station) => station.code), [108, 112, 119, 201, 202, 203]);
   assert.deepEqual(groups[1]?.stations.map((station) => station.code), [95, 101, 114, 211, 212]);
   assert.deepEqual(groups[2]?.stations.map((station) => station.code), [90, 100, 105, 216]);
+  assert.equal(stationRegionKey(108), "metro");
+  assert.equal(stationRegionKey(189), "jeju");
+  assert.equal(stationRegionKey(999), null);
 });
 
 test("keeps an unexpected station visible in a final other group", () => {

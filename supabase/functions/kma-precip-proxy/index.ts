@@ -74,26 +74,30 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
 
     let path: string;
     let searchParams: Record<string, string>;
+    let cacheControl = "public, max-age=60";
     if (api === "daily") {
       const tm = url.searchParams.get("tm") ?? "";
       if (!/^\d{8}$/.test(tm)) return Response.json({ error: "invalid daily query" }, { status: 400 });
       path = "kma_sfcdd.php";
       searchParams = { tm, stn: "0", disp: "0", help: "0", authKey };
     }
-    else if (api === "normal") {
-      const month = url.searchParams.get("MM1") ?? "";
-      const day = url.searchParams.get("DD1") ?? "";
-      if (!/^(?:[1-9]|1[0-2])$/.test(month) || !/^(?:[1-9]|[12]\d|3[01])$/.test(day)) {
+    else if (api === "normal" || api === "normal-range") {
+      const month1 = url.searchParams.get("MM1") ?? "";
+      const day1 = url.searchParams.get("DD1") ?? "";
+      const month2 = api === "normal" ? month1 : url.searchParams.get("MM2") ?? "";
+      const day2 = api === "normal" ? day1 : url.searchParams.get("DD2") ?? "";
+      if (!validMonthDay(month1, day1) || !validMonthDay(month2, day2) || monthDayOrdinal(month1, day1) > monthDayOrdinal(month2, day2)) {
         return Response.json({ error: "invalid normal query" }, { status: 400 });
       }
       path = "sfc_norm1.php";
-      searchParams = { norm: "D", tmst: "2021", stn: "0", MM1: month, DD1: day, MM2: month, DD2: day, authKey };
+      searchParams = { norm: "D", tmst: "2021", stn: "0", MM1: month1, DD1: day1, MM2: month2, DD2: day2, authKey };
+      cacheControl = "public, max-age=86400";
     }
     else return Response.json({ error: "invalid api query" }, { status: 400 });
 
-    const text = await apiText(path, searchParams);
+    const text = await apiText(path, searchParams, api === "normal-range" ? 60_000 : 20_000);
     return new Response(text, {
-      headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=60" },
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": cacheControl },
     });
   } catch (error) {
     if (error instanceof Error) return Response.json({ error: "api upstream unavailable" }, { status: 502 });
@@ -101,11 +105,11 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
   }
 }
 
-async function apiText(path: string, searchParams: Record<string, string>): Promise<string> {
+async function apiText(path: string, searchParams: Record<string, string>, timeout = 20_000): Promise<string> {
   return ky.get(`${API_BASE}/${path}`, {
     searchParams,
     retry: { limit: 2, methods: ["get"] },
-    timeout: 20_000,
+    timeout,
   }).text();
 }
 
@@ -123,4 +127,14 @@ function validDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function validMonthDay(month: string, day: string): boolean {
+  if (!/^(?:[1-9]|1[0-2])$/.test(month) || !/^(?:[1-9]|[12]\d|3[01])$/.test(day)) return false;
+  const parsed = new Date(Date.UTC(2000, Number(month) - 1, Number(day)));
+  return parsed.getUTCMonth() === Number(month) - 1 && parsed.getUTCDate() === Number(day);
+}
+
+function monthDayOrdinal(month: string, day: string): number {
+  return Math.round((Date.UTC(2000, Number(month) - 1, Number(day)) - Date.UTC(2000, 0, 1)) / 86_400_000);
 }

@@ -2,7 +2,7 @@ type StationRecord = Readonly<{
   code: number;
 }>;
 
-type StationRegionDefinition = Readonly<{
+export type StationRegionDefinition = Readonly<{
   key: string;
   label: string;
   codes: readonly number[];
@@ -14,7 +14,7 @@ export type StationRegionGroup<T extends StationRecord> = Readonly<{
   stations: readonly T[];
 }>;
 
-export const STATION_REGIONS: readonly StationRegionDefinition[] = [
+export const STATION_REGIONS = [
   { key: "metro", label: "서울·인천·경기도", codes: [108, 112, 119, 201, 202, 203] },
   { key: "yeongseo", label: "강원특별자치도 영서", codes: [95, 101, 114, 211, 212] },
   { key: "yeongdong", label: "강원특별자치도 영동", codes: [90, 100, 105, 216] },
@@ -25,7 +25,17 @@ export const STATION_REGIONS: readonly StationRegionDefinition[] = [
   { key: "gyeongbuk", label: "대구·경상북도", codes: [130, 136, 138, 143, 271, 272, 273, 277, 278, 279, 281] },
   { key: "gyeongnam", label: "부산·울산·경상남도", codes: [152, 155, 159, 162, 192, 284, 285, 288, 289, 294, 295] },
   { key: "jeju", label: "제주특별자치도", codes: [184, 185, 188, 189] },
-];
+] as const satisfies readonly StationRegionDefinition[];
+
+export type StationRegionKey = typeof STATION_REGIONS[number]["key"];
+
+const REGION_BY_STATION = new Map<number, StationRegionKey>(
+  STATION_REGIONS.flatMap((region) => region.codes.map((code) => [code, region.key] as const)),
+);
+
+export function stationRegionKey(code: number): StationRegionKey | null {
+  return REGION_BY_STATION.get(code) ?? null;
+}
 
 export function groupStationsByRegion<T extends StationRecord>(stations: readonly T[]): StationRegionGroup<T>[] {
   const stationsByCode = new Map(stations.map((station) => [station.code, station] as const));

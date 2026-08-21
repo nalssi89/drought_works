@@ -84,13 +84,23 @@ const cachedPayloadSchema = z.object({
   fetchedAt: z.string().datetime(),
 });
 
+export type ScenarioComparison = Readonly<{
+  baselinePrecipitation?: number;
+  baselineNormal?: number;
+  baselineRatio?: number;
+  scenarioPrecipitation?: number;
+  precipitationDelta?: number;
+  normalDelta?: number;
+  ratioDelta?: number;
+}>;
+
 export type Aggregate = Readonly<{
   code: string;
   normal: number;
   precipitation: number;
   ratio: number;
   rank: number | null;
-}>;
+}> & ScenarioComparison;
 
 export type Station = Readonly<{
   code: number;
@@ -98,7 +108,7 @@ export type Station = Readonly<{
   normal: number;
   precipitation: number;
   ratio: number;
-}>;
+}> & ScenarioComparison;
 
 export type DashboardData = Readonly<{
   requestedDate: string;
@@ -109,8 +119,17 @@ export type DashboardData = Readonly<{
   admins: readonly Aggregate[];
   stations: readonly Station[];
   fetchedAt: string;
-  mode: "official" | "intraday";
+  mode: "official" | "intraday" | "future";
   observationTime: string | null;
+  baseMode?: "official" | "intraday";
+  baseEffectiveDate?: string;
+  scenarioTargetDate?: string;
+  scenarioRainfall?: Readonly<Record<string, number>>;
+  scenarioHorizonDays?: number;
+  scenarioIncludedDays?: number;
+  scenarioHorizonHours?: number;
+  scenarioIncludedHours?: number;
+  scenarioRainfallFraction?: number;
 }>;
 
 export type DashboardResult =
