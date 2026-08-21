@@ -57,7 +57,9 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
 
   try {
     if (api === "hourly-latest") {
-      const text = await apiText("kma_sfctm2.php", { stn: "0", help: "0", authKey });
+      const stn = url.searchParams.get("stn") ?? "0";
+      if (!/^\d+(?::\d+)*$/.test(stn)) return Response.json({ error: "invalid station query" }, { status: 400 });
+      const text = await apiText("kma_sfctm2.php", { stn, help: "0", authKey });
       return new Response(text, {
         headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
       });
