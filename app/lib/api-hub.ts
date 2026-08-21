@@ -30,6 +30,21 @@ export async function fetchDailyNormals(date: string): Promise<Map<number, numbe
 async function request(path: string, searchParams: Record<string, string>): Promise<string> {
   const authKey = process.env.KMA_API_AUTH_KEY;
   if (!authKey) throw new TypeError("KMA APIHub 인증키가 설정되지 않았습니다.");
+  const proxyUrl = process.env.KMA_PROXY_URL;
+  const proxyKey = process.env.KMA_PROXY_ANON_KEY;
+  const api = path === "kma_sfctm2.php" ? "hourly" : "normal";
+  if (proxyUrl && proxyKey) {
+    return ky.get(proxyUrl, {
+      searchParams: { api, ...searchParams },
+      headers: {
+        apikey: proxyKey,
+        Authorization: `Bearer ${proxyKey}`,
+        "x-kma-auth": authKey,
+      },
+      retry: { limit: 2, methods: ["get"] },
+      timeout: 20_000,
+    }).text();
+  }
   return ky.get(`${API_BASE}/${path}`, {
     searchParams: { ...searchParams, authKey },
     retry: { limit: 2, methods: ["get"] },

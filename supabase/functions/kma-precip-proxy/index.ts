@@ -3,11 +3,14 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import ky from "ky";
 
 const PERIODS = new Set(["1m", "3m", "6m", "12m", "ty"]);
+const API_BASE = "https://apihub.kma.go.kr/api/typ01/url";
 
 Deno.serve(async (request: Request) => {
   if (request.method !== "GET") return new Response("method not allowed", { status: 405 });
 
   const url = new URL(request.url);
+  const api = url.searchParams.get("api");
+  if (api) return proxyApiHub(request, url, api);
   const date = url.searchParams.get("date") ?? "";
   const period = url.searchParams.get("period") ?? "";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !PERIODS.has(period)) {
@@ -39,6 +42,44 @@ Deno.serve(async (request: Request) => {
     throw error;
   }
 });
+
+async function proxyApiHub(request: Request, url: URL, api: string): Promise<Response> {
+  const authKey = request.headers.get("x-kma-auth");
+  if (!authKey || authKey.length < 16) return new Response("unauthorized", { status: 401 });
+
+  let path: string;
+  let searchParams: Record<string, string>;
+  if (api === "hourly") {
+    const tm = url.searchParams.get("tm") ?? "";
+    if (!/^\d{12}$/.test(tm)) return Response.json({ error: "invalid hourly query" }, { status: 400 });
+    path = "kma_sfctm2.php";
+    searchParams = { tm, stn: "0", help: "0", authKey };
+  }
+  else if (api === "normal") {
+    const month = url.searchParams.get("MM1") ?? "";
+    const day = url.searchParams.get("DD1") ?? "";
+    if (!/^(?:[1-9]|1[0-2])$/.test(month) || !/^(?:[1-9]|[12]\d|3[01])$/.test(day)) {
+      return Response.json({ error: "invalid normal query" }, { status: 400 });
+    }
+    path = "sfc_norm1.php";
+    searchParams = { norm: "D", tmst: "2021", stn: "0", MM1: month, DD1: day, MM2: month, DD2: day, authKey };
+  }
+  else return Response.json({ error: "invalid api query" }, { status: 400 });
+
+  try {
+    const text = await ky.get(`${API_BASE}/${path}`, {
+      searchParams,
+      retry: { limit: 2, methods: ["get"] },
+      timeout: 20_000,
+    }).text();
+    return new Response(text, {
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=60" },
+    });
+  } catch (error) {
+    if (error instanceof Error) return Response.json({ error: "api upstream unavailable" }, { status: 502 });
+    throw error;
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -47,7 +47,7 @@ test("server-renders year-to-date from January 1 and places it after the rolling
   assert.ok(rollingYear >= 0 && rollingYear < yearToDate);
 });
 
-test("explicit intraday hour uses the matching cached official base", { concurrency: false }, async () => {
+test("explicit intraday hour uses cached data and the server-side APIHub proxy", { concurrency: false }, async () => {
   const stationCodes = [
     108, 112, 119, 201, 202, 203, 101, 114, 211, 212, 95, 100, 105, 216, 90, 127, 131,
     135, 221, 226, 129, 133, 232, 235, 236, 238, 140, 146, 243, 244, 245, 247, 248, 156,
@@ -73,7 +73,9 @@ test("explicit intraday hour uses the matching cached official base", { concurre
     fetchedAt: "2026-08-20T15:40:02.000Z",
   };
   const normalCodes = new Set(stationCodes.map((code) => code === 143 ? 860 : code === 146 ? 864 : code));
-  let proxyRequests = 0;
+  let hydroProxyRequests = 0;
+  let proxiedApiRequests = 0;
+  let directApiRequests = 0;
 
   process.env.KMA_CACHE_URL = "https://cache.example/latest";
   process.env.KMA_PROXY_URL = "https://proxy.example/official";
@@ -83,23 +85,29 @@ test("explicit intraday hour uses the matching cached official base", { concurre
     const url = new URL(input instanceof Request ? input.url : input.toString());
     if (url.hostname === "cache.example") return Response.json(cached);
     if (url.hostname === "proxy.example") {
-      proxyRequests += 1;
+      if (url.searchParams.get("api") === "hourly") {
+        proxiedApiRequests += 1;
+        const observation = url.searchParams.get("tm") ?? "";
+        const rows = stationCodes.map((code) => {
+          const fields = Array.from({ length: 17 }, () => "0");
+          fields[0] = observation;
+          fields[1] = String(code);
+          fields[16] = "1";
+          return fields.join(" ");
+        });
+        return new Response(rows.join("\n"));
+      }
+      if (url.searchParams.get("api") === "normal") {
+        proxiedApiRequests += 1;
+        const rows = [...normalCodes].map((code) => `2021,${code},8,21,0,0,0,1`);
+        return new Response(rows.join("\n"));
+      }
+      hydroProxyRequests += 1;
       return Response.json({ list1: [], list2: [], list_admin: [] });
     }
-    if (url.pathname.endsWith("/kma_sfctm2.php")) {
-      const observation = url.searchParams.get("tm") ?? "";
-      const rows = stationCodes.map((code) => {
-        const fields = Array.from({ length: 17 }, () => "0");
-        fields[0] = observation;
-        fields[1] = String(code);
-        fields[16] = "1";
-        return fields.join(" ");
-      });
-      return new Response(rows.join("\n"));
-    }
-    if (url.pathname.endsWith("/sfc_norm1.php")) {
-      const rows = [...normalCodes].map((code) => `2021,${code},8,21,0,0,0,1`);
-      return new Response(rows.join("\n"));
+    if (url.hostname === "apihub.kma.go.kr") {
+      directApiRequests += 1;
+      throw new TypeError("Sites cannot reach APIHub directly");
     }
     throw new TypeError(`Unexpected test request: ${url.origin}${url.pathname}`);
   };
@@ -109,7 +117,9 @@ test("explicit intraday hour uses the matching cached official base", { concurre
     const html = await response.text();
     assert.doesNotMatch(html, /2026-08-20 기준 공식 자료가 없습니다/);
     assert.match(html, /2026년 02월 22일 00시 ~ 2026년 08월 21일 09시/);
-    assert.equal(proxyRequests, 0, "the unavailable Hydro aggregate should not replace a matching official cache");
+    assert.equal(hydroProxyRequests, 0, "the unavailable Hydro aggregate should not replace a matching official cache");
+    assert.equal(proxiedApiRequests, 4, "hourly rain and normals should use the Supabase server proxy");
+    assert.equal(directApiRequests, 0, "the Sites worker should not call APIHub directly");
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnvironment("KMA_CACHE_URL", previousEnvironment.cacheUrl);
