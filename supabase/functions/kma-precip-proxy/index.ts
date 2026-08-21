@@ -56,6 +56,13 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
   if (!authKey || authKey.length < 16) return new Response("unauthorized", { status: 401 });
 
   try {
+    if (api === "hourly-latest") {
+      const text = await apiText("kma_sfctm2.php", { stn: "0", help: "0", authKey });
+      return new Response(text, {
+        headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+
     if (api === "hourly") {
       const tm = url.searchParams.get("tm") ?? "";
       if (!/^\d{12}$/.test(tm)) return Response.json({ error: "invalid hourly query" }, { status: 400 });
