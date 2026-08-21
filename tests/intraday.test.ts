@@ -11,6 +11,7 @@ import {
   periodStart,
 } from "../app/lib/intraday.ts";
 import { millisecondsUntilNextHourlyRefresh } from "../app/lib/refresh.ts";
+import { IncompleteHourlyObservationError, completeHourlyObservation } from "../supabase/functions/_shared/hourly-observation.ts";
 import { OfficialDataUnavailableError, refreshOfficial } from "../supabase/functions/kma-hourly-cache/official-refresh.ts";
 import {
   REPRESENTATIVE_STATIONS,
@@ -19,6 +20,14 @@ import {
   finalizeOfficialStations,
   parseOfficialDailyRain,
 } from "../supabase/functions/kma-hourly-cache/daily-rollover.ts";
+
+function hourlyLine(time: string, station: number, rain: number): string {
+  const fields = Array.from({ length: 49 }, () => "-9");
+  fields[0] = time;
+  fields[1] = String(station);
+  fields[16] = String(rain);
+  return fields.join(" ");
+}
 
 test("moves the rolling window start to D+1", () => {
   assert.equal(periodStart("2026-08-18", "1m"), "2026-07-19");
@@ -42,6 +51,102 @@ test("reads RN_DAY and treats KMA missing-rain sentinels as zero", () => {
   const rain = parseHourlyDailyRain(rows);
   assert.equal(rain.get(108), 0);
   assert.equal(rain.get(159), 119.3);
+});
+
+test("carries the latest same-day RN_DAY when one representative station is absent", async () => {
+  const observationTime = "202608211200";
+  const currentText = REPRESENTATIVE_STATIONS
+    .filter((station) => station !== 277)
+    .map((station) => hourlyLine(observationTime, station, 0))
+    .join("\n");
+  const requestedTimes: string[] = [];
+
+  const result = await completeHourlyObservation({
+    observationTime,
+    currentText,
+    fetchFallbackText: async (time) => {
+      requestedTimes.push(time);
+      return time === "202608211000" ? hourlyLine(time, 277, 0.4) : "";
+    },
+  });
+
+  assert.equal(result.rain.get(277), 0.4);
+  assert.deepEqual(result.carriedFrom, new Map([[277, "202608211000"]]));
+  assert.deepEqual(requestedTimes, ["202608211100", "202608211000"]);
+  assert.equal(parseHourlyDailyRain(result.text).get(277), 0.4);
+});
+
+test("carries multiple missing stations from their latest same-day observations", async () => {
+  const observationTime = "202608211200";
+  const missingStations = [271, 272, 273, 277, 278, 279, 281] as const;
+  const missingStationSet = new Set<number>(missingStations);
+  const currentText = REPRESENTATIVE_STATIONS
+    .filter((station) => !missingStationSet.has(station))
+    .map((station) => hourlyLine(observationTime, station, 0))
+    .join("\n");
+
+  const result = await completeHourlyObservation({
+    observationTime,
+    currentText,
+    fetchFallbackText: async (time, stations) => {
+      const available = time === "202608211100" ? stations.slice(0, 3) : stations;
+      return available.map((station) => hourlyLine(time, station, station / 10)).join("\n");
+    },
+  });
+
+  assert.equal(result.rain.size, 66);
+  assert.deepEqual(
+    [...result.carriedFrom.entries()],
+    missingStations.map((station, index) => [station, index < 3 ? "202608211100" : "202608211000"]),
+  );
+});
+
+test("does not carry an hourly station value across midnight", async () => {
+  const observationTime = "202608210100";
+  const currentText = REPRESENTATIVE_STATIONS
+    .filter((station) => station !== 277)
+    .map((station) => hourlyLine(observationTime, station, 0))
+    .join("\n");
+  const requestedTimes: string[] = [];
+
+  await assert.rejects(
+    completeHourlyObservation({
+      observationTime,
+      currentText,
+      fetchFallbackText: async (time) => {
+        requestedTimes.push(time);
+        return time === "202608202300" ? hourlyLine(time, 277, 5) : "";
+      },
+    }),
+    (error) => error instanceof IncompleteHourlyObservationError && error.missingStations.includes(277),
+  );
+  assert.deepEqual(requestedTimes, ["202608210000"]);
+});
+
+test("does not relabel a wholly unavailable hour with prior-hour observations", async () => {
+  let fallbackCalls = 0;
+
+  await assert.rejects(
+    completeHourlyObservation({
+      observationTime: "202608211200",
+      currentText: hourlyLine("202608211200", 999, 1),
+      fetchFallbackText: async () => {
+        fallbackCalls += 1;
+        return REPRESENTATIVE_STATIONS.map((station) => hourlyLine("202608211100", station, 0)).join("\n");
+      },
+    }),
+    IncompleteHourlyObservationError,
+  );
+  assert.equal(fallbackCalls, 0);
+});
+
+test("keeps the representative station universe fixed", () => {
+  assert.deepEqual([...REPRESENTATIVE_STATIONS].sort((left, right) => left - right), [
+    90, 95, 100, 101, 105, 108, 112, 114, 119, 127, 129, 130, 131, 133, 135, 136, 138,
+    140, 143, 146, 152, 155, 156, 159, 162, 165, 168, 170, 184, 185, 188, 189, 192, 201,
+    202, 203, 211, 212, 216, 221, 226, 232, 235, 236, 238, 243, 244, 245, 247, 248, 260,
+    261, 262, 271, 272, 273, 277, 278, 279, 281, 284, 285, 288, 289, 294, 295,
+  ]);
 });
 
 test("uses official replacement normals for Daegu and Jeonju", () => {

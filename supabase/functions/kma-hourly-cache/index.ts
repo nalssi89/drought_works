@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { createClient } from "@supabase/supabase-js";
 import ky from "ky";
+import { completeHourlyObservation } from "../_shared/hourly-observation.ts";
 import { aggregateOfficialStations, extendOfficialStations, finalizeOfficialStations, parseCachePayload, parseOfficialDailyRain } from "./daily-rollover.ts";
 import type { AggregateValue as Aggregate, CachePayload, Mode, StationValue as Station } from "./daily-rollover.ts";
 import { OfficialDataUnavailableError, refreshOfficial } from "./official-refresh.ts";
@@ -64,22 +65,14 @@ async function apiText(path: string, params: Record<string, string>, authKey: st
   }).text();
 }
 
-async function hourlyText(observationTime: string, authKey: string): Promise<string> {
-  return apiText("kma_sfctm2.php", { tm: compactTime(observationTime), stn: "0", help: "0" }, authKey);
-}
-
-function parseHourly(text: string, observationTime: string): Map<number, number> {
-  const result = new Map<number, number>();
-  const prefix = compactTime(observationTime);
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith(`${prefix} `)) continue;
-    const fields = line.trim().split(/\s+/);
-    const station = Number(fields[1]);
-    const rain = Number(fields[16]);
-    if (Number.isInteger(station) && Number.isFinite(rain)) result.set(station, Math.max(0, rain));
-  }
-  if (result.size < 60) throw new TypeError(`incomplete hourly observation: ${observationTime}`);
-  return result;
+async function hourlyObservation(observationTime: string, authKey: string) {
+  const currentTime = compactTime(observationTime);
+  const currentText = await apiText("kma_sfctm2.php", { tm: currentTime, stn: "0", help: "0" }, authKey);
+  return completeHourlyObservation({
+    observationTime: currentTime,
+    currentText,
+    fetchFallbackText: (time, stations) => apiText("kma_sfctm2.php", { tm: time, stn: stations.join(":"), help: "0" }, authKey),
+  });
 }
 
 function parseNormals(text: string): Map<number, number> {
@@ -181,15 +174,15 @@ async function updateOfficial(supabase: ReturnType<typeof client>, midnight: str
 async function updateOfficialFromDaily(supabase: ReturnType<typeof client>, midnight: string, authKey: string): Promise<void> {
   const effectiveDate = addDays(midnight.slice(0, 10), -1);
   const observationTime = `${effectiveDate}T23:00`;
-  const [cache, hourlyTextValue, dailyTextValue] = await Promise.all([
+  const [cache, hourly, dailyTextValue] = await Promise.all([
     supabase.from("kma_precip_cache").select("cache_key,payload").like("cache_key", "intraday:%"),
-    hourlyText(observationTime, authKey),
+    hourlyObservation(observationTime, authKey),
     apiText("kma_sfcdd.php", { tm: effectiveDate.replaceAll("-", ""), stn: "0", disp: "0", help: "0" }, authKey),
   ]);
   if (cache.error || !cache.data) throw new TypeError("intraday cache lookup failed");
   if (cache.data.length !== PERIODS.length) throw new OfficialDataUnavailableError();
   const bases = new Map(cache.data.map((row) => [row.cache_key, row.payload]));
-  const hourlyRain = parseHourly(hourlyTextValue, observationTime);
+  const hourlyRain = hourly.rain;
   const dailyRain = parseOfficialDailyRain(dailyTextValue, effectiveDate);
   const rows = PERIODS.map((period) => {
     const base = parseCachePayload(bases.get(`intraday:${period}`), { period, effectiveDate, mode: "intraday" });
@@ -212,7 +205,7 @@ async function updateIntraday(supabase: ReturnType<typeof client>, observationTi
   if (error || !data) throw new TypeError("official cache lookup failed");
   const officialBases = new Map(data.map((row) => [row.cache_key, row.payload]));
   const [endRain, endNormal, periodBases] = await Promise.all([
-    hourlyText(observationTime, authKey).then((text) => parseHourly(text, observationTime)),
+    hourlyObservation(observationTime, authKey).then((observation) => observation.rain),
     apiText("sfc_norm1.php", normalParams(effectiveDate), authKey).then(parseNormals),
     Promise.all(PERIODS.map(async (period) => {
       const base = parseCachePayload(officialBases.get(`official:${period}`), { period, effectiveDate: baseDate, mode: "official" });

@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import ky from "ky";
+import { completeHourlyObservation } from "../_shared/hourly-observation.ts";
 
 const PERIODS = new Set(["1m", "3m", "6m", "12m", "ty"]);
 const API_BASE = "https://apihub.kma.go.kr/api/typ01/url";
@@ -47,37 +48,43 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
   const authKey = request.headers.get("x-kma-auth");
   if (!authKey || authKey.length < 16) return new Response("unauthorized", { status: 401 });
 
-  let path: string;
-  let searchParams: Record<string, string>;
-  if (api === "hourly") {
-    const tm = url.searchParams.get("tm") ?? "";
-    if (!/^\d{12}$/.test(tm)) return Response.json({ error: "invalid hourly query" }, { status: 400 });
-    path = "kma_sfctm2.php";
-    searchParams = { tm, stn: "0", help: "0", authKey };
-  }
-  else if (api === "daily") {
-    const tm = url.searchParams.get("tm") ?? "";
-    if (!/^\d{8}$/.test(tm)) return Response.json({ error: "invalid daily query" }, { status: 400 });
-    path = "kma_sfcdd.php";
-    searchParams = { tm, stn: "0", disp: "0", help: "0", authKey };
-  }
-  else if (api === "normal") {
-    const month = url.searchParams.get("MM1") ?? "";
-    const day = url.searchParams.get("DD1") ?? "";
-    if (!/^(?:[1-9]|1[0-2])$/.test(month) || !/^(?:[1-9]|[12]\d|3[01])$/.test(day)) {
-      return Response.json({ error: "invalid normal query" }, { status: 400 });
-    }
-    path = "sfc_norm1.php";
-    searchParams = { norm: "D", tmst: "2021", stn: "0", MM1: month, DD1: day, MM2: month, DD2: day, authKey };
-  }
-  else return Response.json({ error: "invalid api query" }, { status: 400 });
-
   try {
-    const text = await ky.get(`${API_BASE}/${path}`, {
-      searchParams,
-      retry: { limit: 2, methods: ["get"] },
-      timeout: 20_000,
-    }).text();
+    if (api === "hourly") {
+      const tm = url.searchParams.get("tm") ?? "";
+      if (!/^\d{12}$/.test(tm)) return Response.json({ error: "invalid hourly query" }, { status: 400 });
+      const currentText = await apiText("kma_sfctm2.php", { tm, stn: "0", help: "0", authKey });
+      const observation = await completeHourlyObservation({
+        observationTime: tm,
+        currentText,
+        fetchFallbackText: (time, stations) => apiText("kma_sfctm2.php", { tm: time, stn: stations.join(":"), help: "0", authKey }),
+      });
+      const headers = new Headers({ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=60" });
+      if (observation.carriedFrom.size > 0) {
+        headers.set("X-KMA-Carried-Stations", [...observation.carriedFrom.entries()].map(([station, time]) => `${station}@${time}`).join(","));
+      }
+      return new Response(observation.text, { headers });
+    }
+
+    let path: string;
+    let searchParams: Record<string, string>;
+    if (api === "daily") {
+      const tm = url.searchParams.get("tm") ?? "";
+      if (!/^\d{8}$/.test(tm)) return Response.json({ error: "invalid daily query" }, { status: 400 });
+      path = "kma_sfcdd.php";
+      searchParams = { tm, stn: "0", disp: "0", help: "0", authKey };
+    }
+    else if (api === "normal") {
+      const month = url.searchParams.get("MM1") ?? "";
+      const day = url.searchParams.get("DD1") ?? "";
+      if (!/^(?:[1-9]|1[0-2])$/.test(month) || !/^(?:[1-9]|[12]\d|3[01])$/.test(day)) {
+        return Response.json({ error: "invalid normal query" }, { status: 400 });
+      }
+      path = "sfc_norm1.php";
+      searchParams = { norm: "D", tmst: "2021", stn: "0", MM1: month, DD1: day, MM2: month, DD2: day, authKey };
+    }
+    else return Response.json({ error: "invalid api query" }, { status: 400 });
+
+    const text = await apiText(path, searchParams);
     return new Response(text, {
       headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=60" },
     });
@@ -85,6 +92,14 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
     if (error instanceof Error) return Response.json({ error: "api upstream unavailable" }, { status: 502 });
     throw error;
   }
+}
+
+async function apiText(path: string, searchParams: Record<string, string>): Promise<string> {
+  return ky.get(`${API_BASE}/${path}`, {
+    searchParams,
+    retry: { limit: 2, methods: ["get"] },
+    timeout: 20_000,
+  }).text();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

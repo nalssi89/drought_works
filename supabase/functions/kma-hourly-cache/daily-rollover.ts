@@ -1,5 +1,7 @@
 import { OfficialDataUnavailableError } from "./official-refresh.ts";
 
+export { REPRESENTATIVE_STATIONS } from "../_shared/hourly-observation.ts";
+
 export type StationValue = Readonly<{
   code: number;
   name: string;
@@ -58,11 +60,6 @@ const NATIONAL = [
   ...GROUPS.metro, ...GANGWON, ...GROUPS.chungbuk, ...GROUPS.chungnam,
   ...GROUPS.jeonbuk, ...GROUPS.jeonnam, ...GROUPS.gyeongbuk, ...GROUPS.gyeongnam,
 ] as const;
-
-export const REPRESENTATIVE_STATIONS: readonly number[] = [
-  ...NATIONAL,
-  ...GROUPS.jeju,
-];
 
 export function parseOfficialDailyRain(text: string, date: string): Map<number, number> {
   const result = new Map<number, number>();
