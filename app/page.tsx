@@ -49,7 +49,7 @@ export default async function Home({ searchParams }: PageProps) {
       <section className="data-section">
         <div className="section-title">
           <h2>{data.searchPeriod}</h2>
-          <div className="thresholds" aria-label="평년비 범례"><span>평년비</span><span>65%</span><span>55%</span><span>45%</span></div>
+          <div className="thresholds" aria-label="평년비 셀 색상 기준"><span>평년비</span><span>≤65%</span><span>≤55%</span><span>≤45%</span></div>
         </div>
         <RegionTable data={data} />
         <AdminTable data={data} />
