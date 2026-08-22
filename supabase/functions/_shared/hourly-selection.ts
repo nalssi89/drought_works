@@ -13,9 +13,11 @@ export type HourlySelection = Readonly<{
 
 export class HourlySelectionUnavailableError extends Error {
   readonly name = "HourlySelectionUnavailableError";
+  readonly requestedTime: string;
 
-  constructor(readonly requestedTime: string) {
+  constructor(requestedTime: string) {
     super(`hourly observation is unavailable: ${requestedTime}`);
+    this.requestedTime = requestedTime;
   }
 }
 
