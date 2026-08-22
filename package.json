@@ -9,7 +9,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test:unit": "node --experimental-strip-types --test tests/intraday.test.ts tests/hourly-latest.test.ts tests/station-presentation.test.ts tests/future-scenario.test.ts",
+    "test:unit": "node --experimental-strip-types --test tests/intraday.test.ts tests/hourly-latest.test.ts tests/hourly-selection.test.ts tests/station-presentation.test.ts tests/future-scenario.test.ts",
     "test": "npm run test:unit && npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
