@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import ky from "ky";
-import { completeHourlyObservation } from "../_shared/hourly-observation.ts";
+import { selectHourlyObservation } from "../_shared/hourly-selection.ts";
 
 const PERIODS = new Set(["1m", "3m", "6m", "12m", "ty"]);
 const API_BASE = "https://apihub.kma.go.kr/api/typ01/url";
@@ -32,7 +32,7 @@ Deno.serve(async (request: Request) => {
         "X-Requested-With": "XMLHttpRequest",
       },
       body: custom
-        ? new URLSearchParams({ PERIOD: "random", START: start.replaceAll("-", ""), END: date.replaceAll("-", ""), SPOT: "2", DATE: date.replaceAll("-", ""), })
+        ? new URLSearchParams({ PERIOD: "random", START: start.replaceAll("-", ""), END: date.replaceAll("-", ""), SPOT: "2", DATE: date.replaceAll("-", "") })
         : new URLSearchParams({ PERIOD: period, search_date: date.replaceAll("-", "") }),
       retry: { limit: 2, methods: ["post"] },
       timeout: custom ? 60_000 : 20_000,
@@ -81,15 +81,20 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
     if (api === "hourly") {
       const tm = url.searchParams.get("tm") ?? "";
       if (!/^\d{12}$/.test(tm)) return Response.json({ error: "invalid hourly query" }, { status: 400 });
-      const currentText = await apiText("kma_sfctm2.php", { tm, stn: "0", help: "0", authKey });
-      const observation = await completeHourlyObservation({
-        observationTime: tm,
-        currentText,
-        fetchFallbackText: (time, stations) => apiText("kma_sfctm2.php", { tm: time, stn: stations.join(":"), help: "0", authKey }),
-      });
+      const rangeText = await apiText("kma_sfctm3.php", {
+        tm1: `${tm.slice(0, 8)}0000`,
+        tm2: tm,
+        stn: "0",
+        help: "0",
+        authKey,
+      }, 60_000);
+      const observation = selectHourlyObservation(rangeText, tm);
       const headers = new Headers({ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=60" });
       if (observation.carriedFrom.size > 0) {
         headers.set("X-KMA-Carried-Stations", [...observation.carriedFrom.entries()].map(([station, time]) => `${station}@${time}`).join(","));
+      }
+      if (observation.zeroFilledStations.length > 0) {
+        headers.set("X-KMA-Zero-Filled-Stations", observation.zeroFilledStations.join(","));
       }
       return new Response(observation.text, { headers });
     }
