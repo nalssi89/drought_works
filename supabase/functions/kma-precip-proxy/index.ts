@@ -1,9 +1,15 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import ky from "ky";
+import {
+  cachedPayloadToOfficial,
+  officialPayloadReady,
+  OFFICIAL_PERIODS,
+  type OfficialPeriod,
+} from "../_shared/official-cache-fallback.ts";
 import { selectHourlyObservation } from "../_shared/hourly-selection.ts";
 
-const PERIODS = new Set(["1m", "3m", "6m", "12m", "ty"]);
+const PERIODS = new Set<OfficialPeriod>(OFFICIAL_PERIODS);
 const API_BASE = "https://apihub.kma.go.kr/api/typ01/url";
 
 Deno.serve(async (request: Request) => {
@@ -15,41 +21,94 @@ Deno.serve(async (request: Request) => {
   const date = url.searchParams.get("date") ?? "";
   const period = url.searchParams.get("period") ?? "";
   const start = url.searchParams.get("start") ?? "";
-  if (!validDate(date) || (period === "custom" ? !validCustomRange(start, date) : !PERIODS.has(period))) {
+  if (!validDate(date) || (period === "custom" ? !validCustomRange(start, date) : !PERIODS.has(period as OfficialPeriod))) {
     return Response.json({ error: "invalid date or period" }, { status: 400 });
   }
 
   try {
     const custom = period === "custom";
-    const payload = await ky.post(custom ? "https://hydro.kma.go.kr/ext/prec.do" : "https://hydro.kma.go.kr/drought/analysisAccData.do", {
-      headers: {
-        Accept: "application/json, text/javascript, */*; q=0.01",
-        "Accept-Language": "ko-KR,ko;q=0.9",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        Origin: "https://hydro.kma.go.kr",
-        Referer: custom ? "https://hydro.kma.go.kr/ext/prec_map.do" : "https://hydro.kma.go.kr/index.do",
-        "User-Agent": "Mozilla/5.0 (compatible; KMA-Precipitation-Dashboard/1.0)",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: custom
-        ? new URLSearchParams({ PERIOD: "random", START: start.replaceAll("-", ""), END: date.replaceAll("-", ""), SPOT: "2", DATE: date.replaceAll("-", "") })
-        : new URLSearchParams({ PERIOD: period, search_date: date.replaceAll("-", "") }),
-      retry: { limit: 2, methods: ["post"] },
-      timeout: custom ? 60_000 : 20_000,
-    }).json<unknown>();
-    const validPayload = custom
-      ? isRecord(payload) && Array.isArray(payload.t1) && Array.isArray(payload.t2) && Array.isArray(payload.t4)
-      : isRecord(payload) && Array.isArray(payload.list1) && Array.isArray(payload.list2) && Array.isArray(payload.list_admin);
-    if (!validPayload) {
-      return Response.json({ error: "invalid upstream response" }, { status: 502 });
+    let payload: unknown;
+    try {
+      payload = await ky.post(custom ? "https://hydro.kma.go.kr/ext/prec.do" : "https://hydro.kma.go.kr/drought/analysisAccData.do", {
+        headers: {
+          Accept: "application/json, text/javascript, */*; q=0.01",
+          "Accept-Language": "ko-KR,ko;q=0.9",
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          Origin: "https://hydro.kma.go.kr",
+          Referer: custom ? "https://hydro.kma.go.kr/ext/prec_map.do" : "https://hydro.kma.go.kr/index.do",
+          "User-Agent": "Mozilla/5.0 (compatible; KMA-Precipitation-Dashboard/1.0)",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        body: custom
+          ? new URLSearchParams({ PERIOD: "random", START: start.replaceAll("-", ""), END: date.replaceAll("-", ""), SPOT: "2", DATE: date.replaceAll("-", "") })
+          : new URLSearchParams({ PERIOD: period, search_date: date.replaceAll("-", "") }),
+        retry: { limit: 2, methods: ["post"] },
+        timeout: custom ? 60_000 : 20_000,
+      }).json<unknown>();
+    }
+    catch (error) {
+      if (!custom) {
+        const cached = await cachedOfficialResponse(date, period as OfficialPeriod);
+        if (cached) return cached;
+      }
+      throw error;
     }
 
-    return Response.json(payload, { headers: { "Cache-Control": "public, max-age=300" } });
+    if (custom) {
+      const validPayload = isRecord(payload) && Array.isArray(payload.t1) && Array.isArray(payload.t2) && Array.isArray(payload.t4);
+      if (!validPayload) return Response.json({ error: "invalid upstream response" }, { status: 502 });
+      return Response.json(payload, { headers: { "Cache-Control": "public, max-age=300" } });
+    }
+
+    const officialPeriod = period as OfficialPeriod;
+    if (officialPayloadReady(payload, officialPeriod)) {
+      return Response.json(payload, { headers: { "Cache-Control": "public, max-age=300" } });
+    }
+    const cached = await cachedOfficialResponse(date, officialPeriod);
+    if (cached) return cached;
+    return Response.json({ error: "invalid upstream response" }, { status: 502 });
   } catch (error) {
     if (error instanceof Error) return Response.json({ error: "upstream unavailable" }, { status: 502 });
     throw error;
   }
 });
+
+async function cachedOfficialResponse(date: string, period: OfficialPeriod): Promise<Response | null> {
+  const cached = cachedPayloadToOfficial(await fetchCachedOfficialPayload(period), date, period);
+  if (!cached) return null;
+  return Response.json(cached, {
+    headers: {
+      "Cache-Control": "public, max-age=300",
+      "X-KMA-Data-Source": "official-cache",
+    },
+  });
+}
+
+async function fetchCachedOfficialPayload(period: OfficialPeriod): Promise<unknown> {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceKey) return null;
+  try {
+    const rows = await ky.get(`${supabaseUrl.replace(/\/$/, "")}/rest/v1/kma_precip_cache`, {
+      searchParams: {
+        select: "payload",
+        cache_key: `eq.official:${period}`,
+        limit: "1",
+      },
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+      },
+      retry: { limit: 2, methods: ["get"] },
+      timeout: 10_000,
+    }).json<unknown>();
+    if (!Array.isArray(rows) || !isRecord(rows[0])) return null;
+    return rows[0].payload;
+  }
+  catch {
+    return null;
+  }
+}
 
 async function proxyApiHub(request: Request, url: URL, api: string): Promise<Response> {
   const authKey = request.headers.get("x-kma-auth");
