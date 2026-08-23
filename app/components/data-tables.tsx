@@ -61,7 +61,7 @@ export function AdminTable({ data }: Readonly<{ data: DashboardTableData }>) {
 export function StationTable({ data }: Readonly<{ data: DashboardTableData }>) {
   const groups = groupStationsByRegion(data.stations);
   const scenario = data.mode === "future";
-  const columnCount = scenario ? 12 : 5;
+  const columnCount = scenario ? 13 : 5;
   return (
     <details className="station-details">
       <summary>66개 대표지점 상세 보기 (권역별)</summary>
@@ -69,7 +69,7 @@ export function StationTable({ data }: Readonly<{ data: DashboardTableData }>) {
         <table className={scenario ? "station-table scenario-station-table" : "station-table"} aria-label="권역별 66개 대표지점 누적강수 상세">
           <thead>{scenario ? (
             <tr>
-              <th scope="col">지점번호</th><th scope="col">지점명</th><th scope="col">기준 강수량</th><th scope="col">가정강수</th><th scope="col">산출 강수량</th><th scope="col">강수 증감</th><th scope="col">기준 평년값</th><th scope="col">산출 평년값</th><th scope="col">평년값 증감</th><th scope="col">기준 평년비</th><th scope="col">산출 평년비</th><th scope="col">평년비 증감</th>
+              <th scope="col">지점번호</th><th scope="col">지점명</th><th scope="col">기준 강수량</th><th scope="col">가정강수 반영량</th><th scope="col">미래 산출 강수량</th><th scope="col">강수량 증감</th><th scope="col">기준 평년값</th><th scope="col">미래 산출 평년값</th><th scope="col">평년값 증감</th><th scope="col">기준 평년비</th><th scope="col">미래 산출 평년비</th><th scope="col">평년비 증감 (%p)</th><th scope="col">강수부족량</th>
             </tr>
           ) : (
             <tr><th scope="col">지점번호</th><th scope="col">지점명</th><th scope="col">강수량 (mm)</th><th scope="col">평년값 (mm)</th><th scope="col">평년비 (%)</th></tr>
@@ -98,16 +98,16 @@ function ScenarioRows({ rows }: Readonly<{ rows: readonly Aggregate[] }>) {
   return <>
     <MetricRow label="기준 강수량 (mm)" cells={rows.map((row) => cell(row.code, format(row.baselinePrecipitation ?? baseline(row.precipitation, row.precipitationDelta))))} />
     <MetricRow label="가정강수 반영량 (mm)" cells={rows.map((row) => cell(row.code, format(row.scenarioPrecipitation ?? 0), "scenario-rain-cell"))} />
-    <MetricRow bold label="산출 강수량 (mm)" cells={rows.map((row) => cell(row.code, format(row.precipitation)))} />
+    <MetricRow bold label="미래 산출 강수량 (mm)" cells={rows.map((row) => cell(row.code, format(row.precipitation)))} />
     <MetricRow label="강수량 증감 (mm)" cells={rows.map((row) => deltaCell(row.code, row.precipitationDelta))} />
     <MetricRow label="기준 평년값 (mm)" cells={rows.map((row) => cell(row.code, format(row.baselineNormal ?? baseline(row.normal, row.normalDelta))))} />
-    <MetricRow label="산출 평년값 (mm)" cells={rows.map((row) => cell(row.code, format(row.normal)))} />
+    <MetricRow label="미래 산출 평년값 (mm)" cells={rows.map((row) => cell(row.code, format(row.normal)))} />
     <MetricRow label="평년값 증감 (mm)" cells={rows.map((row) => deltaCell(row.code, row.normalDelta))} />
     <MetricRow bold label="기준 평년비 (%)" cells={rows.map((row) => {
       const value = row.baselineRatio ?? baseline(row.ratio, row.ratioDelta);
       return cell(row.code, format(value), ratioCellClass(value));
     })} />
-    <MetricRow bold label="산출 평년비 (%)" cells={rows.map((row) => cell(row.code, format(row.ratio), ratioCellClass(row.ratio)))} />
+    <MetricRow bold label="미래 산출 평년비 (%)" cells={rows.map((row) => cell(row.code, format(row.ratio), ratioCellClass(row.ratio)))} />
     <MetricRow label="평년비 증감 (%p)" cells={rows.map((row) => deltaCell(row.code, row.ratioDelta))} />
     <MetricRow label="강수부족량 (mm)" cells={rows.map((row) => cell(row.code, shortage(row)))} />
   </>;
@@ -127,6 +127,7 @@ function ScenarioStationRow({ station }: Readonly<{ station: Station }>) {
     <td className={ratioCellClass(station.baselineRatio ?? baseline(station.ratio, station.ratioDelta))}>{format(station.baselineRatio ?? baseline(station.ratio, station.ratioDelta))}</td>
     <td className={ratioCellClass(station.ratio)}>{format(station.ratio)}</td>
     <td className={deltaClass(station.ratioDelta)}>{formatSigned(station.ratioDelta)}</td>
+    <td>{shortage(station)}</td>
   </tr>;
 }
 
@@ -148,7 +149,7 @@ function baseline(projected: number, delta: number | undefined): number {
   return projected - (delta ?? 0);
 }
 
-function shortage(row: Aggregate): string {
+function shortage(row: Pick<Aggregate, "normal" | "precipitation">): string {
   const value = row.normal - row.precipitation;
   return value > 0 ? format(value) : "";
 }

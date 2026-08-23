@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import {
   FUTURE_PERIOD,
@@ -47,15 +47,16 @@ export function FutureControls({
     STATION_REGIONS.map((region) => [region.key, String(rainfallByRegion[region.key])]),
   ) as Record<StationRegionKey, string>);
 
-  const selectedBaseDate = mode === "intraday" ? intradayTime.slice(0, 10) : officialDate;
+  const selectedBaseCandidate = mode === "intraday" ? intradayTime.slice(0, 10) : officialDate;
+  const selectedBaseDate = /^\d{4}-\d{2}-\d{2}$/.test(selectedBaseCandidate) ? selectedBaseCandidate : baseDate;
   const futureMin = addDays(selectedBaseDate, 1);
   const futureMax = addDays(selectedBaseDate, 366);
   const latestDate = addDays(maximumObservationTime.slice(0, 10), -1);
-  const quickDates = useMemo(() => [
+  const quickDates = [
     ["+1주", addDays(selectedBaseDate, 7)],
     ["+1개월", addMonths(selectedBaseDate, 1)],
     ["+3개월", addMonths(selectedBaseDate, 3)],
-  ] as const, [selectedBaseDate]);
+  ] as const;
 
   function changeMode(nextMode: FutureBaseMode) {
     setMode(nextMode);

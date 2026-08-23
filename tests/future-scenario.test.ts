@@ -131,6 +131,40 @@ test("parses a common rainfall value with a regional override", () => {
   assert.equal(rainfall.gyeongnam, 75.5);
 });
 
+test("accepts explicit all-region 100 mm and zero-rain scenarios", () => {
+  for (const expected of [100, 0]) {
+    const rainfall = parseRainfallByRegion((name) => name === "rain_all" ? String(expected) : undefined);
+    assert.deepEqual(rainfall, emptyRainfallByRegion(expected));
+  }
+});
+
+test("supports every required accumulation period and keeps ratio deltas anchored to baseline", () => {
+  for (const period of ["1m", "3m", "6m", "12m", "ty"] as const) {
+    const window = scenarioWindow("2026-08-21", "2026-09-20", period);
+    assert.equal(window.horizonDays, 30);
+    assert.ok(window.includedFutureDays > 0);
+    assert.ok(window.includedFutureDays <= window.horizonDays);
+  }
+
+  const stations = baseStations();
+  const baseline = aggregateStations(stations);
+  const futureNormals = new Map<number, number>(STATION_CODES.map((code) => [code, 30]));
+  futureNormals.set(860, 30);
+  futureNormals.set(864, 30);
+  const result = calculateFutureScenario({
+    baseStations: stations,
+    baseRegions: baseline.regions,
+    baseAdmins: baseline.admins,
+    removedTotals: new Map(STATION_CODES.map((code) => [code, { precipitation: 10, normal: 20 }])),
+    futureNormals,
+    rainfallByRegion: emptyRainfallByRegion(100),
+    assumedRainfallFraction: 1,
+  });
+  for (const row of [...result.regions, ...result.admins, ...result.stations]) {
+    assert.equal(row.ratioDelta, Math.round(((row.ratio - (row.baselineRatio ?? 0)) + Number.EPSILON) * 10) / 10);
+  }
+});
+
 test("requires a future target within 366 days", () => {
   assert.equal(futureRangeIssue("2026-08-21", "2026-08-21"), "미래 시점은 기준일보다 늦어야 합니다.");
   assert.equal(futureRangeIssue("2026-08-21", "2027-08-23"), "향후 강수 시나리오는 기준일 이후 최대 366일까지 산출할 수 있습니다.");

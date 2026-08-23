@@ -6,7 +6,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vinext dev",
+    "dev": "vite",
     "build": "vinext build",
     "start": "vinext start",
     "test:unit": "node --experimental-strip-types --test tests/intraday.test.ts tests/hourly-latest.test.ts tests/hourly-selection.test.ts tests/official-cache-fallback.test.ts tests/station-presentation.test.ts tests/future-scenario.test.ts",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
-import { STATION_CODES } from "./dashboard-fixtures.mjs";
+import { customPayload, STATION_CODES } from "./dashboard-fixtures.mjs";
 
 async function render(pathname) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -14,8 +14,8 @@ async function render(pathname) {
   );
 }
 
-test("server-renders the official six-month regional dashboard", async () => {
-  const response = await render("/?date=2026-08-17&period=6m");
+test("server-renders the official six-month regional dashboard", { concurrency: false }, async () => {
+  const response = await renderWithOfficialFixture("/?date=2026-08-17&period=6m", "6m", "2026-08-17");
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
@@ -37,8 +37,8 @@ test("server-renders the official six-month regional dashboard", async () => {
   assert.doesNotMatch(html, /임의기간|codex-preview|SkeletonPreview|react-loading-skeleton/);
 });
 
-test("server-renders year-to-date from January 1 and places it after the rolling year", async () => {
-  const response = await render("/?date=2026-08-17&period=ty");
+test("server-renders year-to-date from January 1 and places it after the rolling year", { concurrency: false }, async () => {
+  const response = await renderWithOfficialFixture("/?date=2026-08-17&period=ty", "ty", "2026-08-17");
   assert.equal(response.status, 200);
 
   const html = await response.text();
@@ -94,6 +94,8 @@ test("renders a regional future-rainfall scenario with deltas", { concurrency: f
     assert.equal(response.status, 200);
     assert.match(html, /향후 강수 시나리오/);
     assert.match(html, /가정강수 반영량/);
+    assert.match(html, /미래 산출 강수량/);
+    assert.match(html, /강수부족량/);
     assert.match(html, /평년비 증감/);
     assert.match(html, /90\.5/);
     assert.match(html, /42\.9/);
@@ -227,6 +229,57 @@ function officialPayload(date, precipitation, normal) {
     list_admin: Array.from({ length: 4 }, (_, index) => aggregate(String(index + 1).padStart(2, "0"))),
     search_period: "테스트 기준기간",
     search_date_db: date,
+  };
+}
+
+async function renderWithOfficialFixture(pathname, period, date) {
+  const originalFetch = globalThis.fetch;
+  const previousProxyUrl = process.env.KMA_PROXY_URL;
+  const previousProxyKey = process.env.KMA_PROXY_ANON_KEY;
+  process.env.KMA_PROXY_URL = "https://proxy.example/official";
+  process.env.KMA_PROXY_ANON_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    assert.equal(url.hostname, "proxy.example");
+    assert.equal(url.searchParams.get("period"), period);
+    assert.equal(url.searchParams.get("date"), date);
+    return Response.json(officialFixture(date, period));
+  };
+  try {
+    const response = await render(pathname);
+    const body = await response.text();
+    return new Response(body, { status: response.status, headers: response.headers });
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironment("KMA_PROXY_URL", previousProxyUrl);
+    restoreEnvironment("KMA_PROXY_ANON_KEY", previousProxyKey);
+  }
+}
+
+function officialFixture(date, period) {
+  const fixture = customPayload();
+  const stationNames = new Map([[90, "속초"], [100, "대관령"], [152, "울산"], [155, "창원"], [159, "부산"]]);
+  const aggregate = (rows, count) => Array.from({ length: count }, (_, index) => ({
+    brtc_cd: String(index + 1).padStart(2, "0"),
+    ny_prcp: rows[1][`a${index + 1}`],
+    rn_total: rows[0][`a${index + 1}`],
+    rn_ratio: rows[2][`a${index + 1}`],
+    rank_num: rows[4][`a${index + 1}`].split("/")[0],
+  }));
+  return {
+    list1: period === "ty" ? [] : aggregate(fixture.t1, 12),
+    list2: fixture.t2.map((row) => ({
+      stn_cd: row.stn_cd,
+      stn_nm: stationNames.get(row.stn_cd) ?? row.stn_nm,
+      ny_prcp: row.norm,
+      rn_total: row.prcp,
+      rn_ratio_sort: Number(row.norm_ratio),
+    })),
+    list_admin: aggregate(fixture.t4, 4),
+    search_period: period === "ty"
+      ? "2026년 01월 01일 ~ 2026년 08월 17일"
+      : "2026년 02월 18일 ~ 2026년 08월 17일",
+    search_date_db: date.replaceAll("-", ""),
   };
 }
 
