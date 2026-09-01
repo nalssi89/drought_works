@@ -322,16 +322,12 @@ async function boundaryData(period: RollingPeriod, effectiveDate: string, authKe
 async function updateOfficial(
   supabase: ReturnType<typeof client>,
   midnight: string,
-  authKey: string,
 ): Promise<void> {
   const effectiveDate = addDays(midnight.slice(0, 10), -1);
-  const [inputs] = await Promise.all([
-    Promise.all(PERIODS.map(async (period) => ({
-      period,
-      data: await officialData(effectiveDate, period),
-    }))),
-    confirmedDailyRain(effectiveDate, authKey),
-  ]);
+  const inputs = await Promise.all(PERIODS.map(async (period) => ({
+    period,
+    data: await officialData(effectiveDate, period),
+  })));
   const rows = inputs.map(({ period, data }) => ({
     cache_key: `official:${period}`,
     observation_time: midnight,
@@ -488,7 +484,7 @@ Deno.serve(async (request: Request) => {
 
     if (hour === 0 || forceOfficial) {
       const result = await refreshOfficial(
-        () => updateOfficial(supabase, midnight, authKey),
+        () => updateOfficial(supabase, midnight),
         () => updateOfficialFromDaily(supabase, midnight, authKey),
       );
       if (result === "deferred") {
@@ -513,7 +509,7 @@ Deno.serve(async (request: Request) => {
       .maybeSingle();
     if (!data || !isRecord(data.payload) || data.payload.effectiveDate !== expectedBaseDate) {
       const result = await refreshOfficial(
-        () => updateOfficial(supabase, midnight, authKey),
+        () => updateOfficial(supabase, midnight),
         () => updateOfficialFromDaily(supabase, midnight, authKey),
       );
       if (result === "deferred") {
@@ -525,7 +521,7 @@ Deno.serve(async (request: Request) => {
       }
     }
     else if (data.payload.source === "daily") {
-      await refreshOfficial(() => updateOfficial(supabase, midnight, authKey), () => updateOfficialFromDaily(supabase, midnight, authKey));
+      await refreshOfficial(() => updateOfficial(supabase, midnight), () => updateOfficialFromDaily(supabase, midnight, authKey));
     }
 
     const observationTime = await updateIntraday(supabase, scheduledDate, authKey);
