@@ -24,3 +24,20 @@ export async function refreshOfficial(
     }
   }
 }
+
+export function safeRefreshErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return "unknown failure";
+  return error.message.replaceAll(/([?&]authKey=)[^&\s]+/g, "$1[redacted]");
+}
+
+export async function refreshIntradayWithOfficialRetry(
+  officialRefresh: () => Promise<"updated" | "deferred">,
+  intradayRefresh: () => Promise<string>,
+): Promise<Readonly<{
+  observationTime: string;
+  official: PromiseSettledResult<"updated" | "deferred">;
+}>> {
+  const observationTime = await intradayRefresh();
+  const [official] = await Promise.allSettled([officialRefresh()]);
+  return { observationTime, official };
+}

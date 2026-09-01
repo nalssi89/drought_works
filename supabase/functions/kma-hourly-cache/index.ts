@@ -12,6 +12,7 @@ import {
   finalizeOfficialStations,
   parseCachePayload,
   parseOfficialDailyRain,
+  selectRolloverBase,
 } from "./daily-rollover.ts";
 import type {
   AggregateValue as Aggregate,
@@ -19,7 +20,12 @@ import type {
   Mode,
   StationValue as Station,
 } from "./daily-rollover.ts";
-import { OfficialDataUnavailableError, refreshOfficial } from "./official-refresh.ts";
+import {
+  OfficialDataUnavailableError,
+  refreshIntradayWithOfficialRetry,
+  refreshOfficial,
+  safeRefreshErrorMessage,
+} from "./official-refresh.ts";
 
 const PERIODS = ["1m", "3m", "6m", "12m", "ty"] as const;
 const MONTHS = { "1m": 1, "3m": 3, "6m": 6, "12m": 12 } as const;
@@ -406,17 +412,19 @@ async function updateIntraday(
   const { data, error } = await supabase
     .from("kma_precip_cache")
     .select("cache_key,payload")
-    .like("cache_key", "official:%");
-  if (error || !data) throw new TypeError("official cache lookup failed");
-  const officialBases = new Map(data.map((row) => [row.cache_key, row.payload]));
+    .in("cache_key", PERIODS.flatMap((period) => [`official:${period}`, `intraday:${period}`]));
+  if (error || !data) throw new TypeError("rollover cache lookup failed");
+  const bases = new Map(data.map((row) => [row.cache_key, row.payload]));
   const [endNormal, periodBases] = await Promise.all([
     apiText("sfc_norm1.php", normalParams(effectiveDate), authKey).then(parseNormals),
     Promise.all(PERIODS.map(async (period) => {
-      const base = parseCachePayload(officialBases.get(`official:${period}`), {
-        period,
-        effectiveDate: baseDate,
-        mode: "official",
-      });
+      const base = selectRolloverBase(
+        {
+          official: bases.get(`official:${period}`),
+          intraday: bases.get(`intraday:${period}`),
+        },
+        { period, effectiveDate: baseDate },
+      );
       return { period, base };
     })),
   ]);
@@ -507,25 +515,38 @@ Deno.serve(async (request: Request) => {
       .select("payload")
       .eq("cache_key", "official:6m")
       .maybeSingle();
-    if (!data || !isRecord(data.payload) || data.payload.effectiveDate !== expectedBaseDate) {
-      const result = await refreshOfficial(
+    const shouldRefreshOfficial = !data
+      || !isRecord(data.payload)
+      || data.payload.effectiveDate !== expectedBaseDate
+      || data.payload.source === "daily";
+    const officialRefresh = shouldRefreshOfficial
+      ? () => refreshOfficial(
         () => updateOfficial(supabase, midnight),
         () => updateOfficialFromDaily(supabase, midnight, authKey),
-      );
-      if (result === "deferred") {
-        return Response.json({
-          status: "deferred",
-          reason: "official data not ready",
-          observationTime: scheduledObservationTime,
-        }, { status: 202 });
+      )
+      : () => Promise.resolve<"updated" | "deferred">("updated");
+    const result = await refreshIntradayWithOfficialRetry(
+      officialRefresh,
+      () => updateIntraday(supabase, scheduledDate, authKey),
+    );
+    switch (result.official.status) {
+      case "fulfilled":
+        break;
+      case "rejected": {
+        const message = safeRefreshErrorMessage(result.official.reason);
+        console.warn(JSON.stringify({
+          event: "kma_official_refresh_failed_during_intraday",
+          scheduledDate,
+          message,
+        }));
+        break;
+      }
+      default: {
+        const unreachable: never = result.official;
+        throw new TypeError(`unexpected official refresh result: ${String(unreachable)}`);
       }
     }
-    else if (data.payload.source === "daily") {
-      await refreshOfficial(() => updateOfficial(supabase, midnight), () => updateOfficialFromDaily(supabase, midnight, authKey));
-    }
-
-    const observationTime = await updateIntraday(supabase, scheduledDate, authKey);
-    return Response.json({ status: "updated", mode: "intraday", observationTime });
+    return Response.json({ status: "updated", mode: "intraday", observationTime: result.observationTime });
   } catch (error) {
     if (error instanceof LatestHourlyObservationUnavailableError) {
       console.warn(JSON.stringify({
@@ -539,7 +560,7 @@ Deno.serve(async (request: Request) => {
         observationTime: error.actualObservationTime,
       }, { status: 202 });
     }
-    const message = error instanceof Error ? error.message : "unknown failure";
+    const message = safeRefreshErrorMessage(error);
     console.error(JSON.stringify({ event: "kma_hourly_cache_failure", message }));
     return Response.json({ error: "refresh unavailable" }, { status: 502 });
   }

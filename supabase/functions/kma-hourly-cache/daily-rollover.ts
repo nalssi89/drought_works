@@ -100,6 +100,22 @@ export function parseCachePayload(
   return { schemaVersion: 2, ...expected, observationTime, stations, regions: value.regions.map(parseAggregate), admins: value.admins.map(parseAggregate), fetchedAt: value.fetchedAt, source };
 }
 
+export function selectRolloverBase(
+  candidates: Readonly<{ official: unknown; intraday: unknown }>,
+  expected: Readonly<{ period: Period; effectiveDate: string }>,
+): CachePayload {
+  try {
+    return parseCachePayload(candidates.official, { ...expected, mode: "official" });
+  } catch (error) {
+    if (!(error instanceof OfficialDataUnavailableError)) throw error;
+  }
+  const intraday = parseCachePayload(candidates.intraday, { ...expected, mode: "intraday" });
+  if (intraday.observationTime?.slice(0, 10) !== expected.effectiveDate) {
+    throw new OfficialDataUnavailableError();
+  }
+  return intraday;
+}
+
 export function aggregateOfficialStations(stations: readonly StationValue[]): Readonly<{
   regions: AggregateValue[];
   admins: AggregateValue[];
