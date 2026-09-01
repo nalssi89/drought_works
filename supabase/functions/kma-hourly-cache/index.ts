@@ -322,12 +322,16 @@ async function boundaryData(period: RollingPeriod, effectiveDate: string, authKe
 async function updateOfficial(
   supabase: ReturnType<typeof client>,
   midnight: string,
+  authKey: string,
 ): Promise<void> {
   const effectiveDate = addDays(midnight.slice(0, 10), -1);
-  const inputs = await Promise.all(PERIODS.map(async (period) => ({
-    period,
-    data: await officialData(effectiveDate, period),
-  })));
+  const [inputs] = await Promise.all([
+    Promise.all(PERIODS.map(async (period) => ({
+      period,
+      data: await officialData(effectiveDate, period),
+    }))),
+    confirmedDailyRain(effectiveDate, authKey),
+  ]);
   const rows = inputs.map(({ period, data }) => ({
     cache_key: `official:${period}`,
     observation_time: midnight,
@@ -344,22 +348,14 @@ async function updateOfficialFromDaily(
   authKey: string,
 ): Promise<void> {
   const effectiveDate = addDays(midnight.slice(0, 10), -1);
-  const observationTime = `${effectiveDate}T23:00`;
-  const [cache, hourly, dailyTextValue] = await Promise.all([
+  const [cache, confirmedRain] = await Promise.all([
     supabase.from("kma_precip_cache").select("cache_key,payload").like("cache_key", "intraday:%"),
-    hourlyObservation(observationTime, authKey),
-    apiText("kma_sfcdd.php", {
-      tm: effectiveDate.replaceAll("-", ""),
-      stn: "0",
-      disp: "0",
-      help: "0",
-    }, authKey),
+    confirmedDailyRain(effectiveDate, authKey),
   ]);
   if (cache.error || !cache.data) throw new TypeError("intraday cache lookup failed");
   if (cache.data.length !== PERIODS.length) throw new OfficialDataUnavailableError();
   const bases = new Map(cache.data.map((row) => [row.cache_key, row.payload]));
-  const hourlyRain = hourly.rain;
-  const dailyRain = parseOfficialDailyRain(dailyTextValue, effectiveDate);
+  const { hourlyRain, dailyRain } = confirmedRain;
   const rows = PERIODS.map((period) => {
     const base = parseCachePayload(bases.get(`intraday:${period}`), {
       period,
@@ -379,6 +375,23 @@ async function updateOfficialFromDaily(
   });
   const { error } = await supabase.from("kma_precip_cache").upsert(rows);
   if (error) throw new TypeError("daily official cache update failed");
+}
+
+async function confirmedDailyRain(effectiveDate: string, authKey: string) {
+  const [hourly, dailyTextValue] = await Promise.all([
+    hourlyObservation(`${effectiveDate}T23:00`, authKey),
+    apiText("kma_sfcdd.php", {
+      tm: effectiveDate.replaceAll("-", ""),
+      stn: "0",
+      disp: "0",
+      help: "0",
+    }, authKey),
+  ]);
+  const hourlyRain = hourly.rain;
+  return {
+    hourlyRain,
+    dailyRain: parseOfficialDailyRain(dailyTextValue, effectiveDate, hourlyRain.keys()),
+  };
 }
 
 async function updateIntraday(
@@ -475,7 +488,7 @@ Deno.serve(async (request: Request) => {
 
     if (hour === 0 || forceOfficial) {
       const result = await refreshOfficial(
-        () => updateOfficial(supabase, midnight),
+        () => updateOfficial(supabase, midnight, authKey),
         () => updateOfficialFromDaily(supabase, midnight, authKey),
       );
       if (result === "deferred") {
@@ -500,7 +513,7 @@ Deno.serve(async (request: Request) => {
       .maybeSingle();
     if (!data || !isRecord(data.payload) || data.payload.effectiveDate !== expectedBaseDate) {
       const result = await refreshOfficial(
-        () => updateOfficial(supabase, midnight),
+        () => updateOfficial(supabase, midnight, authKey),
         () => updateOfficialFromDaily(supabase, midnight, authKey),
       );
       if (result === "deferred") {
@@ -512,7 +525,7 @@ Deno.serve(async (request: Request) => {
       }
     }
     else if (data.payload.source === "daily") {
-      await refreshOfficial(() => updateOfficial(supabase, midnight));
+      await refreshOfficial(() => updateOfficial(supabase, midnight, authKey), () => updateOfficialFromDaily(supabase, midnight, authKey));
     }
 
     const observationTime = await updateIntraday(supabase, scheduledDate, authKey);

@@ -61,17 +61,28 @@ const NATIONAL = [
   ...GROUPS.jeonbuk, ...GROUPS.jeonnam, ...GROUPS.gyeongbuk, ...GROUPS.gyeongnam,
 ] as const;
 
-export function parseOfficialDailyRain(text: string, date: string): Map<number, number> {
+export function parseOfficialDailyRain(
+  text: string,
+  date: string,
+  requiredStations?: Iterable<number>,
+): Map<number, number> {
   const result = new Map<number, number>();
   const compactDate = date.replaceAll("-", "");
   for (const line of text.split(/\r?\n/)) {
     if (!line.startsWith(`${compactDate} `)) continue;
     const fields = line.trim().split(/\s+/);
     const station = Number(fields[1]);
-    const dailyRain = Number(fields[2]);
-    if (Number.isInteger(station) && Number.isFinite(dailyRain)) result.set(station, Math.max(0, dailyRain));
+    const dailyRain = Number(fields[38]);
+    if (Number.isInteger(station) && Number.isFinite(dailyRain)) result.set(station, dailyRain);
   }
   if (result.size < 60) throw new OfficialDataUnavailableError();
+  if (requiredStations) {
+    for (const station of requiredStations) {
+      const dailyRain = result.get(station);
+      if (dailyRain === undefined || dailyRain < 0) throw new OfficialDataUnavailableError();
+    }
+  }
+  for (const [station, dailyRain] of result) result.set(station, Math.max(0, dailyRain));
   return result;
 }
 

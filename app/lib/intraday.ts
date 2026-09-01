@@ -34,6 +34,7 @@ const GROUPS = {
   gyeongnam: [152, 155, 159, 162, 192, 284, 285, 288, 289, 294, 295],
   jeju: [184, 185, 188, 189],
 } as const;
+const REPRESENTATIVE_STATIONS = new Set(Object.values(GROUPS).flat());
 
 export function periodStart(endDate: string, period: Period): string {
   if (period === "ty") return `${endDate.slice(0, 4)}-01-01`;
@@ -74,8 +75,10 @@ export function parseOfficialDailyRain(text: string, date: string): Map<number, 
     if (!line.startsWith(`${compactDate} `)) continue;
     const fields = line.trim().split(/\s+/);
     const station = Number(fields[1]);
-    const dailyRain = Number(fields[2]);
-    if (Number.isInteger(station) && Number.isFinite(dailyRain)) result.set(station, Math.max(0, dailyRain));
+    const dailyRain = Number(fields[38]);
+    if (!Number.isInteger(station) || !REPRESENTATIVE_STATIONS.has(station) || !Number.isFinite(dailyRain)) continue;
+    if (dailyRain < 0) throw new TypeError("official daily rain is unavailable");
+    result.set(station, dailyRain);
   }
   return result;
 }

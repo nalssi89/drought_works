@@ -162,7 +162,14 @@ test("explicit intraday hour uses cached data and the server-side APIHub proxy",
         proxiedDailyRequests += 1;
         const date = url.searchParams.get("tm") ?? "";
         assert.equal(date, "20260221", "the removed boundary day should use the official ASOS daily total");
-        return new Response(STATION_CODES.map((code) => `${date} ${code} 1`).join("\n"));
+        const rows = STATION_CODES.map((code) => {
+          const fields = Array.from({ length: 56 }, () => "0");
+          fields[0] = date;
+          fields[1] = String(code);
+          fields[38] = "1";
+          return fields.join(" ");
+        });
+        return new Response(rows.join("\n"));
       }
       if (url.searchParams.get("api") === "normal") {
         proxiedNormalRequests += 1;

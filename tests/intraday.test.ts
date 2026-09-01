@@ -261,8 +261,8 @@ test("reads final RN_DAY from the KMA ASOS daily response", () => {
     const fields = Array.from({ length: 56 }, () => "-9");
     fields[0] = "20260818";
     fields[1] = String(90 + index);
-    fields[2] = index === 18 ? "12.4" : "-9.0";
-    fields[38] = "99.9";
+    fields[2] = "1.6";
+    fields[38] = index === 18 ? "12.4" : "0.0";
     return fields.join(" ");
   }).join("\n");
 
