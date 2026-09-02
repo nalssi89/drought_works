@@ -37,7 +37,7 @@ export async function refreshIntradayWithOfficialRetry(
   observationTime: string;
   official: PromiseSettledResult<"updated" | "deferred">;
 }>> {
-  const observationTime = await intradayRefresh();
   const [official] = await Promise.allSettled([officialRefresh()]);
+  const observationTime = await intradayRefresh();
   return { observationTime, official };
 }

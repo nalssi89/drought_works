@@ -42,12 +42,12 @@ test("continues the current-day intraday refresh when official daily data is def
   assert.match(rolloverGuard, /refreshIntradayWithOfficialRetry/);
 });
 
-test("finishes the intraday refresh before an official retry that fails", async () => {
+test("retries official daily data before calculating the same run's intraday cache", async () => {
   // Given: the upstream official refresh fails while current-day hourly data is available.
   const officialError = new TypeError("official upstream failed");
   const callOrder: string[] = [];
 
-  // When: the hourly refresh and official retry run independently.
+  // When: the official retry fails while the hourly refresh can continue.
   const result = await refreshIntradayWithOfficialRetry(
     async () => {
       callOrder.push("official");
@@ -59,8 +59,8 @@ test("finishes the intraday refresh before an official retry that fails", async 
     },
   );
 
-  // Then: hourly data advances and the official failure remains observable.
-  assert.deepEqual(callOrder, ["intraday", "official"]);
+  // Then: the current run can use a newly promoted official base, while failure still does not block hourly data.
+  assert.deepEqual(callOrder, ["official", "intraday"]);
   assert.equal(result.observationTime, "2026-09-02T08:00");
   assert.equal(result.official.status, "rejected");
   if (result.official.status === "rejected") assert.equal(result.official.reason, officialError);

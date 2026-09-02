@@ -12,6 +12,7 @@ import {
   finalizeOfficialStations,
   parseCachePayload,
   parseOfficialDailyRain,
+  rolloverCacheKey,
   selectRolloverBase,
 } from "./daily-rollover.ts";
 import type {
@@ -299,7 +300,7 @@ function payload(
     regions,
     admins,
     fetchedAt: new Date().toISOString(),
-    source: mode === "official" ? "hydro" : "intraday",
+    source: mode === "official" ? "hydro" : mode === "rollover" ? "hourly" : "intraday",
   };
 }
 
@@ -323,6 +324,106 @@ async function boundaryData(period: RollingPeriod, effectiveDate: string, authKe
     apiText("sfc_norm1.php", normalParams(removedDate), authKey).then(parseNormals),
   ]);
   return { removedRain, removedNormal };
+}
+
+async function ensureRolloverBases(
+  supabase: ReturnType<typeof client>,
+  effectiveDate: string,
+  authKey: string,
+): Promise<ReadonlyMap<Period, CachePayload>> {
+  const completedAt = `${addDays(effectiveDate, 1)}T00:00`;
+  const rolloverKeys = PERIODS.map((period) => rolloverCacheKey(effectiveDate, period));
+  const existing = await supabase
+    .from("kma_precip_cache")
+    .select("cache_key,payload")
+    .in("cache_key", rolloverKeys);
+  if (existing.error || !existing.data) throw new TypeError("rollover cache lookup failed");
+  if (existing.data.length === PERIODS.length) {
+    const values = new Map(existing.data.map((row) => [row.cache_key, row.payload]));
+    try {
+      return new Map(PERIODS.map((period) => [
+        period,
+        selectRolloverBase(
+          { official: undefined, rollover: values.get(rolloverCacheKey(effectiveDate, period)) },
+          { period, effectiveDate },
+        ),
+      ]));
+    } catch (error) {
+      if (!(error instanceof OfficialDataUnavailableError)) throw error;
+    }
+  }
+
+  const baseDate = addDays(effectiveDate, -1);
+  const sourceKeys = PERIODS.flatMap((period) => [
+    `official:${period}`,
+    rolloverCacheKey(baseDate, period),
+  ]);
+  const source = await supabase
+    .from("kma_precip_cache")
+    .select("cache_key,payload")
+    .in("cache_key", sourceKeys);
+  if (source.error || !source.data) throw new TypeError("rollover source lookup failed");
+  const sourceValues = new Map(source.data.map((row) => [row.cache_key, row.payload]));
+  const rollingPeriods = PERIODS.filter((period): period is RollingPeriod => period !== "ty");
+  const [completedRain, endNormal, boundaryEntries] = await Promise.all([
+    hourlyObservation(completedAt, authKey).then((observation) => observation.rain),
+    apiText("sfc_norm1.php", normalParams(effectiveDate), authKey).then(parseNormals),
+    Promise.all(rollingPeriods.map(async (period) => [
+      period,
+      await boundaryData(period, effectiveDate, authKey),
+    ] as const)),
+  ]);
+  const boundaries = new Map(boundaryEntries);
+  const snapshots = PERIODS.map((period) => {
+    const base = selectRolloverBase(
+      {
+        official: sourceValues.get(`official:${period}`),
+        rollover: sourceValues.get(rolloverCacheKey(baseDate, period)),
+      },
+      { period, effectiveDate: baseDate },
+    );
+    let stations: readonly Station[];
+    if (period === "ty") {
+      stations = extendOfficialStations(base.stations, completedRain, endNormal);
+    } else {
+      const boundary = boundaries.get(period);
+      if (!boundary) throw new OfficialDataUnavailableError();
+      stations = adjust(
+        base.stations,
+        boundary.removedRain,
+        completedRain,
+        boundary.removedNormal,
+        endNormal,
+      );
+    }
+    const value = payload(
+      period,
+      effectiveDate,
+      "rollover",
+      completedAt,
+      stations,
+      base.regions,
+      base.admins,
+    );
+    return {
+      period,
+      value,
+      row: {
+        cache_key: rolloverCacheKey(effectiveDate, period),
+        observation_time: completedAt,
+        payload: value,
+        refreshed_at: new Date().toISOString(),
+      },
+    };
+  });
+  const { error } = await supabase.from("kma_precip_cache").upsert(snapshots.map(({ row }) => row));
+  if (error) throw new TypeError("rollover cache update failed");
+  console.info(JSON.stringify({
+    event: "kma_rollover_snapshot_completed",
+    effectiveDate,
+    observationTime: completedAt,
+  }));
+  return new Map(snapshots.map(({ period, value }) => [period, value]));
 }
 
 async function updateOfficial(
@@ -350,20 +451,22 @@ async function updateOfficialFromDaily(
   authKey: string,
 ): Promise<void> {
   const effectiveDate = addDays(midnight.slice(0, 10), -1);
+  const rolloverKeys = PERIODS.map((period) => rolloverCacheKey(effectiveDate, period));
   const [cache, confirmedRain] = await Promise.all([
-    supabase.from("kma_precip_cache").select("cache_key,payload").like("cache_key", "intraday:%"),
+    supabase.from("kma_precip_cache").select("cache_key,payload").in("cache_key", rolloverKeys),
     confirmedDailyRain(effectiveDate, authKey),
   ]);
-  if (cache.error || !cache.data) throw new TypeError("intraday cache lookup failed");
+  if (cache.error || !cache.data) throw new TypeError("rollover cache lookup failed");
   if (cache.data.length !== PERIODS.length) throw new OfficialDataUnavailableError();
   const bases = new Map(cache.data.map((row) => [row.cache_key, row.payload]));
   const { hourlyRain, dailyRain } = confirmedRain;
   const rows = PERIODS.map((period) => {
-    const base = parseCachePayload(bases.get(`intraday:${period}`), {
+    const base = parseCachePayload(bases.get(rolloverCacheKey(effectiveDate, period)), {
       period,
       effectiveDate,
-      mode: "intraday",
+      mode: "rollover",
     });
+    if (base.observationTime !== `${midnight.slice(0, 10)}T00:00`) throw new OfficialDataUnavailableError();
     const finalized = finalizeOfficialStations({ ...base, hourlyRain, dailyRain });
     return {
       cache_key: `official:${period}`,
@@ -377,11 +480,17 @@ async function updateOfficialFromDaily(
   });
   const { error } = await supabase.from("kma_precip_cache").upsert(rows);
   if (error) throw new TypeError("daily official cache update failed");
+  console.info(JSON.stringify({
+    event: "kma_daily_official_promoted",
+    effectiveDate,
+    source: "daily",
+  }));
 }
 
 async function confirmedDailyRain(effectiveDate: string, authKey: string) {
+  const completedAt = `${addDays(effectiveDate, 1)}T00:00`;
   const [hourly, dailyTextValue] = await Promise.all([
-    hourlyObservation(`${effectiveDate}T23:00`, authKey),
+    hourlyObservation(completedAt, authKey),
     apiText("kma_sfcdd.php", {
       tm: effectiveDate.replaceAll("-", ""),
       stn: "0",
@@ -412,22 +521,38 @@ async function updateIntraday(
   const { data, error } = await supabase
     .from("kma_precip_cache")
     .select("cache_key,payload")
-    .in("cache_key", PERIODS.flatMap((period) => [`official:${period}`, `intraday:${period}`]));
-  if (error || !data) throw new TypeError("rollover cache lookup failed");
-  const bases = new Map(data.map((row) => [row.cache_key, row.payload]));
-  const [endNormal, periodBases] = await Promise.all([
+    .in("cache_key", PERIODS.map((period) => `official:${period}`));
+  if (error || !data) throw new TypeError("official cache lookup failed");
+  const officialBases = new Map(data.map((row) => [row.cache_key, row.payload]));
+  const needsRollover = PERIODS.some((period) => {
+    try {
+      parseCachePayload(officialBases.get(`official:${period}`), {
+        period,
+        effectiveDate: baseDate,
+        mode: "official",
+      });
+      return false;
+    } catch (parseError) {
+      if (parseError instanceof OfficialDataUnavailableError) return true;
+      throw parseError;
+    }
+  });
+  const [endNormal, rolloverBases] = await Promise.all([
     apiText("sfc_norm1.php", normalParams(effectiveDate), authKey).then(parseNormals),
-    Promise.all(PERIODS.map(async (period) => {
-      const base = selectRolloverBase(
-        {
-          official: bases.get(`official:${period}`),
-          intraday: bases.get(`intraday:${period}`),
-        },
-        { period, effectiveDate: baseDate },
-      );
-      return { period, base };
-    })),
+    needsRollover
+      ? ensureRolloverBases(supabase, baseDate, authKey)
+      : Promise.resolve(new Map<Period, CachePayload>()),
   ]);
+  const periodBases = PERIODS.map((period) => ({
+    period,
+    base: selectRolloverBase(
+      {
+        official: officialBases.get(`official:${period}`),
+        rollover: rolloverBases.get(period),
+      },
+      { period, effectiveDate: baseDate },
+    ),
+  }));
   const rows = await Promise.all(periodBases.map(async ({ period, base }) => {
     const stations = period === "ty"
       ? extendOfficialStations(base.stations, hourly.rain, endNormal)

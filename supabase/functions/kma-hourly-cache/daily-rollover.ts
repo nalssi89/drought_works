@@ -19,7 +19,7 @@ export type AggregateValue = Readonly<{
 }>;
 
 export type Period = "1m" | "3m" | "6m" | "12m" | "ty";
-export type Mode = "official" | "intraday";
+export type Mode = "official" | "intraday" | "rollover";
 export type CachePayload = Readonly<{
   schemaVersion: 2;
   period: Period;
@@ -30,7 +30,7 @@ export type CachePayload = Readonly<{
   regions: readonly AggregateValue[];
   admins: readonly AggregateValue[];
   fetchedAt: string;
-  source: "hydro" | "daily" | "intraday";
+  source: "hydro" | "daily" | "intraday" | "hourly";
 }>;
 
 type FinalizationInput = Readonly<{
@@ -95,13 +95,19 @@ export function parseCachePayload(
     if (!isRecord(item) || typeof item.code !== "number" || typeof item.name !== "string" || typeof item.normal !== "number" || typeof item.precipitation !== "number" || typeof item.ratio !== "number") throw new OfficialDataUnavailableError();
     return { code: item.code, name: item.name, normal: item.normal, precipitation: item.precipitation, ratio: item.ratio };
   });
-  const source = value.source === "daily" ? "daily" : expected.mode === "official" ? "hydro" : "intraday";
+  const source = value.source === "daily"
+    ? "daily"
+    : expected.mode === "official"
+    ? "hydro"
+    : expected.mode === "rollover"
+    ? "hourly"
+    : "intraday";
   const observationTime = typeof value.observationTime === "string" ? value.observationTime : null;
   return { schemaVersion: 2, ...expected, observationTime, stations, regions: value.regions.map(parseAggregate), admins: value.admins.map(parseAggregate), fetchedAt: value.fetchedAt, source };
 }
 
 export function selectRolloverBase(
-  candidates: Readonly<{ official: unknown; intraday: unknown }>,
+  candidates: Readonly<{ official: unknown; rollover: unknown }>,
   expected: Readonly<{ period: Period; effectiveDate: string }>,
 ): CachePayload {
   try {
@@ -109,11 +115,15 @@ export function selectRolloverBase(
   } catch (error) {
     if (!(error instanceof OfficialDataUnavailableError)) throw error;
   }
-  const intraday = parseCachePayload(candidates.intraday, { ...expected, mode: "intraday" });
-  if (intraday.observationTime?.slice(0, 10) !== expected.effectiveDate) {
+  const rollover = parseCachePayload(candidates.rollover, { ...expected, mode: "rollover" });
+  if (rollover.observationTime !== `${addDays(expected.effectiveDate, 1)}T00:00`) {
     throw new OfficialDataUnavailableError();
   }
-  return intraday;
+  return rollover;
+}
+
+export function rolloverCacheKey(effectiveDate: string, period: Period): string {
+  return `rollover:${effectiveDate}:${period}`;
 }
 
 export function aggregateOfficialStations(stations: readonly StationValue[]): Readonly<{
@@ -194,6 +204,12 @@ function average(values: readonly number[]): number {
 
 function round1(value: number): number {
   return Math.round((value + Number.EPSILON) * 10) / 10;
+}
+
+function addDays(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
