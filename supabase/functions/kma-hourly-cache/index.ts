@@ -13,6 +13,7 @@ import {
   parseCachePayload,
   parseOfficialDailyRain,
   rolloverCacheKey,
+  selectLatestCompletedBase,
   selectRolloverBase,
 } from "./daily-rollover.ts";
 import type {
@@ -590,8 +591,23 @@ Deno.serve(async (request: Request) => {
       const url = new URL(request.url);
       const period = PERIODS.find((value) => value === url.searchParams.get("period"));
       const mode = url.searchParams.get("mode");
-      if (!period || (mode !== "official" && mode !== "intraday")) {
+      if (!period || (mode !== "official" && mode !== "intraday" && mode !== "completed")) {
         return Response.json({ error: "invalid query" }, { status: 400 });
+      }
+      if (mode === "completed") {
+        const [official, rollover] = await Promise.all([
+          supabase.from("kma_precip_cache").select("payload").eq("cache_key", `official:${period}`).maybeSingle(),
+          supabase.from("kma_precip_cache").select("payload").like("cache_key", `rollover:%:${period}`).order("cache_key", { ascending: false }).limit(1).maybeSingle(),
+        ]);
+        if (official.error || rollover.error) throw new TypeError("completed cache lookup failed");
+        try {
+          return Response.json(selectLatestCompletedBase({ official: official.data?.payload, rollover: rollover.data?.payload }, period), {
+            headers: { "Cache-Control": "public, max-age=60" },
+          });
+        } catch (error) {
+          if (error instanceof OfficialDataUnavailableError) return Response.json({ error: "cache is not ready" }, { status: 503 });
+          throw error;
+        }
       }
       const { data, error } = await supabase
         .from("kma_precip_cache")

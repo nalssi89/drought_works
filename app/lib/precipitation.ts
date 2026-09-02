@@ -76,7 +76,7 @@ const cachedPayloadSchema = z.object({
   schemaVersion: z.literal(2),
   period: periodSchema,
   effectiveDate: dateSchema,
-  mode: z.enum(["official", "intraday"]),
+  mode: z.enum(["official", "intraday", "rollover"]),
   observationTime: z.string().regex(/^\d{4}-\d{2}-\d{2}T(?:0\d|1\d|2[0-3]):00$/).nullable(),
   stations: z.array(cachedStationSchema).length(66),
   regions: z.array(cachedAggregateSchema).default([]),
@@ -119,7 +119,7 @@ export type DashboardData = Readonly<{
   admins: readonly Aggregate[];
   stations: readonly Station[];
   fetchedAt: string;
-  mode: "official" | "intraday" | "future";
+  mode: "official" | "intraday" | "rollover" | "future";
   observationTime: string | null;
   baseMode?: "official" | "intraday";
   baseEffectiveDate?: string;
@@ -170,7 +170,7 @@ export function addMonths(date: string, months: number): string {
 
 export async function loadDashboard(requestedDate: string | null, period: Period, observationTime: string | null = null, useCachedLatest = false): Promise<DashboardResult> {
   if (useCachedLatest) {
-    const cached = await loadCachedDashboard(period, observationTime ? "intraday" : "official");
+    const cached = await loadCachedDashboard(period, observationTime ? "intraday" : "completed");
     if (cached.kind === "ok") return cached;
   }
   if (observationTime) return loadIntradayDashboard(observationTime, period);
@@ -184,7 +184,7 @@ export async function loadDashboard(requestedDate: string | null, period: Period
   return { kind: "unavailable", message: "최근 7일 안에 완료된 공식 일자료를 찾지 못했습니다." };
 }
 
-async function loadCachedDashboard(period: Period, mode: "official" | "intraday"): Promise<DashboardResult> {
+async function loadCachedDashboard(period: Period, mode: "official" | "intraday" | "completed"): Promise<DashboardResult> {
   const cacheUrl = process.env.KMA_CACHE_URL;
   const proxyKey = process.env.KMA_PROXY_ANON_KEY;
   if (!cacheUrl || !proxyKey) return { kind: "unavailable", message: "예약 갱신 자료가 설정되지 않았습니다." };
@@ -196,11 +196,14 @@ async function loadCachedDashboard(period: Period, mode: "official" | "intraday"
       timeout: 20_000,
     }).json<unknown>();
     const cached = cachedPayloadSchema.parse(value);
-    if (cached.period !== period || cached.mode !== mode) throw new TypeError("예약 갱신 자료의 조회 조건이 다릅니다.");
+    const modeMatches = mode === "completed"
+      ? cached.mode === "official" || cached.mode === "rollover"
+      : cached.mode === mode;
+    if (cached.period !== period || !modeMatches) throw new TypeError("예약 갱신 자료의 조회 조건이 다릅니다.");
     const stations = cached.stations.map((station) => ({ ...station }));
     const calculated = aggregateStations(stations);
-    const regions = mode === "official" && cached.regions.length === 12 ? cached.regions : mergeAggregateRanks(calculated.regions, cached.regions);
-    const admins = mode === "official" && cached.admins.length === 4 ? cached.admins : mergeAggregateRanks(calculated.admins, cached.admins);
+    const regions = cached.mode === "official" && cached.regions.length === 12 ? cached.regions : mergeAggregateRanks(calculated.regions, cached.regions);
+    const admins = cached.mode === "official" && cached.admins.length === 4 ? cached.admins : mergeAggregateRanks(calculated.admins, cached.admins);
     const startDate = periodStart(cached.effectiveDate, period);
     const elapsedHours = cached.observationTime ? Number(cached.observationTime.slice(11, 13)) : 24;
     return {
@@ -208,15 +211,15 @@ async function loadCachedDashboard(period: Period, mode: "official" | "intraday"
       data: {
         requestedDate: cached.effectiveDate,
         effectiveDate: cached.effectiveDate,
-        searchPeriod: mode === "official"
-          ? `${displayDate(startDate)} ~ ${displayDate(cached.effectiveDate)}`
-          : `${displayDate(startDate)} 00시 ~ ${displayDate(cached.effectiveDate)} ${String(elapsedHours).padStart(2, "0")}시 (당일 관측 반영 추정)`,
+        searchPeriod: cached.mode === "intraday"
+          ? `${displayDate(startDate)} 00시 ~ ${displayDate(cached.effectiveDate)} ${String(elapsedHours).padStart(2, "0")}시 (당일 관측 반영 추정)`
+          : `${displayDate(startDate)} ~ ${displayDate(cached.effectiveDate)}`,
         period,
         regions,
         admins,
         stations,
         fetchedAt: cached.fetchedAt,
-        mode,
+        mode: cached.mode,
         observationTime: cached.observationTime,
       },
     };

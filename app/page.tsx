@@ -51,8 +51,9 @@ export default async function Home({ searchParams }: PageProps) {
       <header className="site-header"><h1>권역별 누적강수 현황</h1></header>
       <Controls date={data.effectiveDate} period={data.period} intraday={data.mode === "intraday"} observationTime={data.observationTime ?? `${data.effectiveDate}T18:00`} maximumObservationTime={maximumObservationTime} liveLatest={useCachedLatest} />
       {data.mode === "intraday" ? <p className="estimate-notice" role="note"><strong>추정 산출:</strong> 선택 시각의 공식 RN_DAY 일누적을 반영하고, 평년값은 종료일 하루의 일평년값 전체를 적용해 시간과 관계없이 동일합니다. 최저순위는 직전 완료된 공식 일자료 기준입니다.</p> : null}
+      {data.mode === "rollover" ? <p className="estimate-notice" role="note"><strong>잠정 완료자료:</strong> {displayDate(data.effectiveDate)} 공식 일자료에 미확정 값(-9.0)이 남아 있어, {displayDate(data.observationTime?.slice(0, 10) ?? data.effectiveDate)} 00시까지 수집된 공식 시간자료로 산출했습니다. 공식 일자료 확정 시 자동 교체됩니다.</p> : null}
       <DashboardTables data={data} />
-      <footer><span>자료: <a href="https://hydro.kma.go.kr/index.do">기상청 수문기상 가뭄정보 시스템</a> · 기상청 APIHub ASOS/지상 평년값</span><span>{data.mode === "intraday" ? "당일 값은 01~23시 공식 시간관측을 사용한 참고용 추정치입니다." : "완료 일값은 매일 00:40 ASOS 00시 마감자료로 갱신됩니다."}</span></footer>
+      <footer><span>자료: <a href="https://hydro.kma.go.kr/index.do">기상청 수문기상 가뭄정보 시스템</a> · 기상청 APIHub ASOS/지상 평년값</span><span>{data.mode === "intraday" ? "당일 값은 01~23시 공식 시간관측을 사용한 참고용 추정치입니다." : data.mode === "rollover" ? "익일 00시 시간자료 기반 잠정 완료값이며 확정 일자료 확인 시 자동 교체됩니다." : "완료 일값은 매일 00:40 ASOS 00시 마감자료로 갱신됩니다."}</span></footer>
     </main>
   );
 }

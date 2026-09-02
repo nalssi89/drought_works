@@ -6,6 +6,7 @@ import {
   REPRESENTATIVE_STATIONS,
   parseOfficialDailyRain,
   rolloverCacheKey,
+  selectLatestCompletedBase,
   selectRolloverBase,
 } from "../supabase/functions/kma-hourly-cache/daily-rollover.ts";
 import type {
@@ -98,6 +99,35 @@ test("prefers a finalized official base over the retained hourly rollover", () =
   // Then: finalized data remains authoritative.
   assert.equal(selected.mode, "official");
   assert.equal(selected.observationTime, null);
+});
+
+test("default completed selection does not remain on stale official date when next-day 00:00 rollover exists", () => {
+  const official = cachePayload("official", "2026-08-31", null);
+  const rollover = cachePayload("rollover", "2026-09-01", "2026-09-02T00:00");
+
+  const selected = selectLatestCompletedBase({ official, rollover }, "1m");
+
+  assert.equal(selected.effectiveDate, "2026-09-01");
+  assert.equal(selected.mode, "rollover");
+});
+
+test("default completed selection prefers finalized official data when dates match", () => {
+  const official = cachePayload("official", "2026-09-01", null);
+  const rollover = cachePayload("rollover", "2026-09-01", "2026-09-02T00:00");
+
+  const selected = selectLatestCompletedBase({ official, rollover }, "1m");
+
+  assert.equal(selected.mode, "official");
+});
+
+test("default completed selection ignores a rollover that stops at 23:00", () => {
+  const official = cachePayload("official", "2026-08-31", null);
+  const rollover = cachePayload("rollover", "2026-09-01", "2026-09-01T23:00");
+
+  const selected = selectLatestCompletedBase({ official, rollover }, "1m");
+
+  assert.equal(selected.effectiveDate, "2026-08-31");
+  assert.equal(selected.mode, "official");
 });
 
 test("rejects a retained rollover that stops at 23:00 instead of the next-day 00:00 boundary", () => {

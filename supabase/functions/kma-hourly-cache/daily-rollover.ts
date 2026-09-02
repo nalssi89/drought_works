@@ -122,6 +122,17 @@ export function selectRolloverBase(
   return rollover;
 }
 
+export function selectLatestCompletedBase(
+  candidates: Readonly<{ official: unknown; rollover: unknown }>,
+  period: Period,
+): CachePayload {
+  const official = parseCompletedCandidate(candidates.official, period, "official");
+  const rollover = parseCompletedCandidate(candidates.rollover, period, "rollover");
+  if (official && (!rollover || official.effectiveDate >= rollover.effectiveDate)) return official;
+  if (rollover) return rollover;
+  throw new OfficialDataUnavailableError();
+}
+
 export function rolloverCacheKey(effectiveDate: string, period: Period): string {
   return `rollover:${effectiveDate}:${period}`;
 }
@@ -214,6 +225,18 @@ function addDays(date: string, days: number): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseCompletedCandidate(value: unknown, period: Period, mode: "official" | "rollover"): CachePayload | null {
+  if (!isRecord(value) || typeof value.effectiveDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.effectiveDate)) return null;
+  try {
+    const parsed = parseCachePayload(value, { period, effectiveDate: value.effectiveDate, mode });
+    if (mode === "rollover" && parsed.observationTime !== `${addDays(parsed.effectiveDate, 1)}T00:00`) return null;
+    return parsed;
+  } catch (error) {
+    if (error instanceof OfficialDataUnavailableError) return null;
+    throw error;
+  }
 }
 
 function parseAggregate(value: unknown): AggregateValue {

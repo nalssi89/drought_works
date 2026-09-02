@@ -50,6 +50,53 @@ test("server-renders year-to-date from January 1 and places it after the rolling
   assert.ok(rollingYear >= 0 && rollingYear < yearToDate && yearToDate < future);
 });
 
+test("default dashboard does not remain on August 31 when the September 1 midnight rollover is available", { concurrency: false }, async () => {
+  const originalFetch = globalThis.fetch;
+  const previousEnvironment = {
+    cacheUrl: process.env.KMA_CACHE_URL,
+    proxyKey: process.env.KMA_PROXY_ANON_KEY,
+  };
+  const aggregate = (code) => ({ code, normal: 100, precipitation: 50, ratio: 50, rank: null });
+  const cached = {
+    schemaVersion: 2,
+    period: "1m",
+    effectiveDate: "2026-09-01",
+    mode: "rollover",
+    observationTime: "2026-09-02T00:00",
+    stations: STATION_CODES.map((code) => ({ code, name: String(code), normal: 100, precipitation: 50, ratio: 50 })),
+    regions: Array.from({ length: 12 }, (_, index) => aggregate(String(index + 1).padStart(2, "0"))),
+    admins: Array.from({ length: 4 }, (_, index) => aggregate(String(index + 1).padStart(2, "0"))),
+    fetchedAt: "2026-09-02T00:00:02.000Z",
+  };
+  let cacheRequests = 0;
+
+  process.env.KMA_CACHE_URL = "https://cache.example/latest";
+  process.env.KMA_PROXY_ANON_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    assert.equal(url.hostname, "cache.example");
+    assert.equal(url.searchParams.get("period"), "1m");
+    assert.equal(url.searchParams.get("mode"), "completed");
+    cacheRequests += 1;
+    return Response.json(cached);
+  };
+
+  try {
+    const response = await render("/?period=1m");
+    const html = await response.text();
+    assert.equal(response.status, 200);
+    assert.match(html, /value="2026-09-01"/);
+    assert.match(html, /2026년 08월 02일 ~ 2026년 09월 01일/);
+    assert.match(html, /잠정 완료자료/);
+    assert.match(html, /공식 일자료 확정 시 자동 교체/);
+    assert.equal(cacheRequests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnvironment("KMA_CACHE_URL", previousEnvironment.cacheUrl);
+    restoreEnvironment("KMA_PROXY_ANON_KEY", previousEnvironment.proxyKey);
+  }
+});
+
 test("renders a regional future-rainfall scenario with deltas", { concurrency: false }, async () => {
   const originalFetch = globalThis.fetch;
   const previousEnvironment = {
