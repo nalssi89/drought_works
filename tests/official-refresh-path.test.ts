@@ -94,16 +94,18 @@ test("ordinary hourly runs update intraday data without retrying official promot
   assert.match(source, /const observationTime = await updateIntraday\(supabase, scheduledDate, authKey\)/);
 });
 
-test("schedules hourly rollover at minute 10 and retries daily promotion from 08:20 KST", () => {
+test("schedules hourly rollover at minute 10 and retries daily promotion from 01:20 KST", () => {
   const directory = new URL("../supabase/migrations/", import.meta.url);
-  const sql = readdirSync(directory)
-    .filter((name) => name.endsWith(".sql"))
-    .map((name) => readFileSync(new URL(name, directory), "utf8"))
-    .join("\n");
+  const migrationName = readdirSync(directory)
+    .find((name) => name.endsWith("_poll_daily_rainfall_from_0120_kst.sql"));
+  assert.ok(migrationName);
+  const sql = readFileSync(new URL(migrationName, directory), "utf8");
 
-  assert.match(sql, /cron\.schedule\(\s*'refresh-kma-hourly-cache',\s*'10 \* \* \* \*'/);
-  assert.match(sql, /cron\.schedule\(\s*'refresh-kma-daily-cache',\s*'20 0-14,23 \* \* \*'/);
+  assert.match(sql, /cron\.schedule\(\s*'refresh-kma-daily-cache',\s*'20 0-14,16-23 \* \* \*'/);
   assert.match(sql, /kma-hourly-cache\?refresh=official/);
+  assert.match(sql, /payload->>'effectiveDate'/);
+  assert.match(sql, /payload->>'source' = 'daily'/);
+  assert.match(sql, /\) < 5/);
 });
 
 test("redacts the KMA auth key from refresh failure details", () => {

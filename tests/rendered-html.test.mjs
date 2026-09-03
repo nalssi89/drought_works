@@ -89,7 +89,7 @@ test("default dashboard does not remain on August 31 when the September 1 midnig
     assert.match(html, /value="2026-09-01"/);
     assert.match(html, /2026년 08월 02일 ~ 2026년 09월 01일/);
     assert.match(html, /시간자료 완료값/);
-    assert.match(html, /매일 08시경 공식 일자료로 자동 교체/);
+    assert.match(html, /매일 01:20부터 공식 일자료를 확인해 최초 확인 시 한 번 교체/);
     assert.equal(cacheRequests, 1);
   } finally {
     globalThis.fetch = originalFetch;
