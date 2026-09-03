@@ -1,69 +1,109 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
-import {
-  refreshIntradayWithOfficialRetry,
-  safeRefreshErrorMessage,
-} from "../supabase/functions/kma-hourly-cache/official-refresh.ts";
+import { safeRefreshErrorMessage } from "../supabase/functions/kma-hourly-cache/official-refresh.ts";
 
-test("accepts completed Hydro aggregates without waiting for ASOS daily confirmation", () => {
-  // Given: the published Hydro refresh and raw-daily fallback are separate paths.
+test("derives scheduled official precipitation only from RN_DSUM daily data", () => {
   const source = readFileSync(
     new URL("../supabase/functions/kma-hourly-cache/index.ts", import.meta.url),
     "utf8",
   );
-  const publishedStart = source.indexOf("async function updateOfficial(");
-  const fallbackStart = source.indexOf("async function updateOfficialFromDaily(");
-  assert.ok(publishedStart >= 0 && fallbackStart > publishedStart);
+  const refreshStart = source.indexOf("async function updateOfficialFromDaily(");
+  const confirmationStart = source.indexOf("async function confirmedDailyRain(");
+  assert.ok(refreshStart >= 0 && confirmationStart > refreshStart);
+  const refresh = source.slice(refreshStart, confirmationStart);
 
-  // When: the published refresh implementation is isolated.
-  const publishedRefresh = source.slice(publishedStart, fallbackStart);
-
-  // Then: only the fallback may depend on raw ASOS daily confirmation.
-  assert.doesNotMatch(publishedRefresh, /\bconfirmedDailyRain\(/);
+  assert.match(refresh, /confirmedDailyRain/);
+  assert.match(refresh, /source: "daily"/);
+  assert.doesNotMatch(source, /analysisAccData|HYDRO_URL|officialData\(/);
 });
 
-test("continues the current-day intraday refresh when official daily data is deferred", () => {
-  // Given: the non-midnight rollover branch and its final intraday update.
+test("contains no legacy hydrological aggregation source", () => {
+  const sources = [
+    "../app/lib/precipitation.ts",
+    "../app/lib/range-data.ts",
+    "../supabase/functions/kma-precip-proxy/index.ts",
+    "../supabase/functions/kma-hourly-cache/index.ts",
+    "../supabase/functions/kma-hourly-cache/daily-rollover.ts",
+  ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
+
+  for (const source of sources) {
+    assert.doesNotMatch(source, /hydro\.kma|analysisAccData|ext\/prec|"hydro"/i);
+  }
+});
+
+test("uses sts_rn RN_DSUM for every official daily rainfall request", () => {
+  const cacheSource = readFileSync(
+    new URL("../supabase/functions/kma-hourly-cache/index.ts", import.meta.url),
+    "utf8",
+  );
+  const appSource = readFileSync(new URL("../app/lib/api-hub.ts", import.meta.url), "utf8");
+  const proxySource = readFileSync(
+    new URL("../supabase/functions/kma-precip-proxy/index.ts", import.meta.url),
+    "utf8",
+  );
+
+  for (const source of [cacheSource, appSource, proxySource]) {
+    assert.match(source, /sts_rn\.php/);
+    assert.doesNotMatch(source, /kma_sfcdd\.php/);
+  }
+});
+
+test("promotes RN_DSUM without a third precipitation source", () => {
   const source = readFileSync(
     new URL("../supabase/functions/kma-hourly-cache/index.ts", import.meta.url),
     "utf8",
   );
-  const rolloverStart = source.indexOf("const expectedBaseDate");
-  const responseStart = source.indexOf('return Response.json({ status: "updated", mode: "intraday"', rolloverStart);
-  assert.ok(rolloverStart >= 0 && responseStart > rolloverStart);
+  const handlerStart = source.indexOf("if (forceOfficial)");
+  const handlerEnd = source.indexOf("if (hour === 0)", handlerStart);
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  const officialBranch = source.slice(handlerStart, handlerEnd);
 
-  // When: the official-refresh guard is isolated.
-  const rolloverGuard = source.slice(rolloverStart, responseStart);
-
-  // Then: a deferred official refresh cannot return before the intraday fallback runs.
-  assert.doesNotMatch(rolloverGuard, /return Response\.json\(\{\s*status: "deferred"/);
-  assert.match(rolloverGuard, /refreshIntradayWithOfficialRetry/);
+  assert.match(officialBranch, /incrementalReady[\s\S]*updateOfficialFromDaily/);
+  assert.match(officialBranch, /rebuildOfficialFromDaily/);
+  assert.doesNotMatch(officialBranch, /updateOfficial\(/);
+  assert.match(officialBranch, /payload\.source === "daily"/);
 });
 
-test("retries official daily data before calculating the same run's intraday cache", async () => {
-  // Given: the upstream official refresh fails while current-day hourly data is available.
-  const officialError = new TypeError("official upstream failed");
-  const callOrder: string[] = [];
+test("uses the midnight hourly run to complete the previous day instead of promoting official data", () => {
+  const source = readFileSync(
+    new URL("../supabase/functions/kma-hourly-cache/index.ts", import.meta.url),
+    "utf8",
+  );
+  const handlerStart = source.indexOf("const forceOfficial");
+  const handlerEnd = source.indexOf("} catch (error)", handlerStart);
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  const handler = source.slice(handlerStart, handlerEnd);
 
-  // When: the official retry fails while the hourly refresh can continue.
-  const result = await refreshIntradayWithOfficialRetry(
-    async () => {
-      callOrder.push("official");
-      throw officialError;
-    },
-    async () => {
-      callOrder.push("intraday");
-      return "2026-09-02T08:00";
-    },
+  assert.match(handler, /if \(forceOfficial\) \{[\s\S]*refreshOfficial\(/);
+  assert.match(
+    handler,
+    /if \(hour === 0\) \{[\s\S]*ensureRolloverBases\(supabase, addDays\(scheduledDate, -1\), authKey\)/,
+  );
+  assert.match(handler, /mode: "rollover"/);
+});
+
+test("ordinary hourly runs update intraday data without retrying official promotion", () => {
+  const source = readFileSync(
+    new URL("../supabase/functions/kma-hourly-cache/index.ts", import.meta.url),
+    "utf8",
   );
 
-  // Then: the current run can use a newly promoted official base, while failure still does not block hourly data.
-  assert.deepEqual(callOrder, ["official", "intraday"]);
-  assert.equal(result.observationTime, "2026-09-02T08:00");
-  assert.equal(result.official.status, "rejected");
-  if (result.official.status === "rejected") assert.equal(result.official.reason, officialError);
+  assert.doesNotMatch(source, /refreshIntradayWithOfficialRetry/);
+  assert.match(source, /const observationTime = await updateIntraday\(supabase, scheduledDate, authKey\)/);
+});
+
+test("schedules hourly rollover at minute 10 and retries daily promotion from 08:20 KST", () => {
+  const directory = new URL("../supabase/migrations/", import.meta.url);
+  const sql = readdirSync(directory)
+    .filter((name) => name.endsWith(".sql"))
+    .map((name) => readFileSync(new URL(name, directory), "utf8"))
+    .join("\n");
+
+  assert.match(sql, /cron\.schedule\(\s*'refresh-kma-hourly-cache',\s*'10 \* \* \* \*'/);
+  assert.match(sql, /cron\.schedule\(\s*'refresh-kma-daily-cache',\s*'20 0-14,23 \* \* \*'/);
+  assert.match(sql, /kma-hourly-cache\?refresh=official/);
 });
 
 test("redacts the KMA auth key from refresh failure details", () => {

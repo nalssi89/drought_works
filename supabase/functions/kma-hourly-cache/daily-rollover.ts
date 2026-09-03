@@ -30,7 +30,7 @@ export type CachePayload = Readonly<{
   regions: readonly AggregateValue[];
   admins: readonly AggregateValue[];
   fetchedAt: string;
-  source: "hydro" | "daily" | "intraday" | "hourly";
+  source: "daily" | "intraday" | "hourly";
 }>;
 
 type FinalizationInput = Readonly<{
@@ -69,17 +69,17 @@ export function parseOfficialDailyRain(
   const result = new Map<number, number>();
   const compactDate = date.replaceAll("-", "");
   for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith(`${compactDate} `)) continue;
-    const fields = line.trim().split(/\s+/);
+    if (!line.startsWith(`${compactDate} `) && !line.startsWith(`${compactDate},`)) continue;
+    const fields = line.includes(",") ? line.split(",").map((field) => field.trim()) : line.trim().split(/\s+/);
     const station = Number(fields[1]);
-    const dailyRain = Number(fields[38]);
+    const dailyRain = Number(fields[5]);
     if (Number.isInteger(station) && Number.isFinite(dailyRain)) result.set(station, dailyRain);
   }
   if (result.size < 60) throw new OfficialDataUnavailableError();
   if (requiredStations) {
     for (const station of requiredStations) {
       const dailyRain = result.get(station);
-      if (dailyRain === undefined || dailyRain < 0) throw new OfficialDataUnavailableError();
+      if (dailyRain === undefined) throw new OfficialDataUnavailableError();
     }
   }
   for (const [station, dailyRain] of result) result.set(station, Math.max(0, dailyRain));
@@ -95,13 +95,8 @@ export function parseCachePayload(
     if (!isRecord(item) || typeof item.code !== "number" || typeof item.name !== "string" || typeof item.normal !== "number" || typeof item.precipitation !== "number" || typeof item.ratio !== "number") throw new OfficialDataUnavailableError();
     return { code: item.code, name: item.name, normal: item.normal, precipitation: item.precipitation, ratio: item.ratio };
   });
-  const source = value.source === "daily"
-    ? "daily"
-    : expected.mode === "official"
-    ? "hydro"
-    : expected.mode === "rollover"
-    ? "hourly"
-    : "intraday";
+  const source = expected.mode === "official" ? "daily" : expected.mode === "rollover" ? "hourly" : "intraday";
+  if (value.source !== source) throw new OfficialDataUnavailableError();
   const observationTime = typeof value.observationTime === "string" ? value.observationTime : null;
   return { schemaVersion: 2, ...expected, observationTime, stations, regions: value.regions.map(parseAggregate), admins: value.admins.map(parseAggregate), fetchedAt: value.fetchedAt, source };
 }

@@ -1,6 +1,6 @@
 import ky from "ky";
 
-import { parseHourlyDailyRain, parseOfficialDailyRain } from "./intraday";
+import { parseHourlyDailyRain, parseOfficialDailyRain, parseOfficialDailyRainTotals } from "./intraday.ts";
 
 const API_BASE = "https://apihub.kma.go.kr/api/typ01/url";
 
@@ -32,7 +32,7 @@ export async function fetchDailyNormalRange(startDate: string, endDate: string):
       MM2: String(Number(endMonth)),
       DD2: String(Number(endDay)),
     });
-    return parseDailyNormalTotals(text);
+    return parseDailyNormalTotals(text, Number(start.slice(0, 4)));
   }));
 
   const totals = new Map<number, number>();
@@ -43,13 +43,36 @@ export async function fetchDailyNormalRange(startDate: string, endDate: string):
 }
 
 export async function fetchOfficialDailyRain(date: string): Promise<Map<number, number>> {
-  const text = await request("kma_sfcdd.php", {
-    tm: date.replaceAll("-", ""),
-    stn: "0",
-    disp: "0",
+  const compactDate = date.replaceAll("-", "");
+  const text = await request("sts_rn.php", {
+    tm1: compactDate,
+    tm2: compactDate,
+    stn_id: "0",
+    disp: "1",
     help: "0",
   });
   return parseOfficialDailyRain(text, date);
+}
+
+export async function fetchOfficialDailyRainRange(startDate: string, endDate: string): Promise<Map<number, number>> {
+  if (startDate > endDate) return new Map();
+  const segments = splitByDays(startDate, endDate, 31);
+  const maps = await Promise.all(segments.map(async ({ start, end }) => {
+    const text = await request("sts_rn.php", {
+      tm1: start.replaceAll("-", ""),
+      tm2: end.replaceAll("-", ""),
+      stn_id: "0",
+      disp: "1",
+      help: "0",
+    });
+    return parseOfficialDailyRainTotals(text, start, end);
+  }));
+
+  const totals = new Map<number, number>();
+  for (const values of maps) {
+    for (const [station, value] of values) totals.set(station, round1((totals.get(station) ?? 0) + value));
+  }
+  return totals;
 }
 
 async function request(path: string, searchParams: Record<string, string>): Promise<string> {
@@ -59,12 +82,13 @@ async function request(path: string, searchParams: Record<string, string>): Prom
   const proxyKey = process.env.KMA_PROXY_ANON_KEY;
   const normalRange = path === "sfc_norm1.php"
     && (searchParams.MM1 !== searchParams.MM2 || searchParams.DD1 !== searchParams.DD2);
+  const dailyRange = path === "sts_rn.php" && searchParams.tm1 !== searchParams.tm2;
   const api = path === "kma_sfctm2.php"
     ? "hourly"
-    : path === "kma_sfcdd.php"
+    : path === "sts_rn.php"
       ? "daily"
       : normalRange ? "normal-range" : "normal";
-  const timeout = normalRange ? 60_000 : 20_000;
+  const timeout = normalRange || dailyRange ? 60_000 : 20_000;
   if (proxyUrl && proxyKey) {
     return ky.get(proxyUrl, {
       searchParams: { api, ...searchParams },
@@ -84,14 +108,17 @@ async function request(path: string, searchParams: Record<string, string>): Prom
   }).text();
 }
 
-function parseDailyNormalTotals(text: string): Map<number, number> {
+export function parseDailyNormalTotals(text: string, actualYear: number): Map<number, number> {
   const totals = new Map<number, number>();
   for (const line of text.split(/\r?\n/)) {
     if (!/^2021,/.test(line)) continue;
     const fields = line.split(",").map((field) => field.trim());
     const station = Number(fields[1]);
+    const month = Number(fields[2]);
+    const day = Number(fields[3]);
     const rain = Number(fields[7]);
-    if (Number.isInteger(station) && Number.isFinite(rain) && rain >= 0) {
+    const date = `${actualYear}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    if (validDate(date) && Number.isInteger(station) && Number.isFinite(rain) && rain >= 0) {
       totals.set(station, round1((totals.get(station) ?? 0) + rain));
     }
   }
@@ -111,6 +138,29 @@ function splitByCalendarYear(startDate: string, endDate: string): ReadonlyArray<
   return segments;
 }
 
+function splitByDays(startDate: string, endDate: string, maximumDays: number): ReadonlyArray<Readonly<{ start: string; end: string }>> {
+  const segments: Array<{ start: string; end: string }> = [];
+  let cursor = startDate;
+  while (cursor <= endDate) {
+    const candidateEnd = addDays(cursor, maximumDays - 1);
+    const segmentEnd = candidateEnd < endDate ? candidateEnd : endDate;
+    segments.push({ start: cursor, end: segmentEnd });
+    cursor = addDays(segmentEnd, 1);
+  }
+  return segments;
+}
+
+function addDays(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
 function round1(value: number): number {
   return Math.round((value + Number.EPSILON) * 10) / 10;
+}
+
+function validDate(value: string): boolean {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }

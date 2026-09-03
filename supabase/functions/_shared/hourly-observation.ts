@@ -23,6 +23,7 @@ type HourlyRow = Readonly<{
 type CompleteHourlyObservationInput = Readonly<{
   observationTime: string;
   currentText: string;
+  stations?: readonly number[];
   fetchFallbackText: (observationTime: string, stations: readonly number[]) => Promise<string>;
 }>;
 
@@ -66,12 +67,17 @@ export class IncompleteHourlyObservationError extends Error {
 export async function completeHourlyObservation(
   input: CompleteHourlyObservationInput,
 ): Promise<CompleteHourlyObservation> {
-  const rows = parseHourlyRows(input.currentText, input.observationTime);
+  const stations = input.stations ?? REPRESENTATIVE_STATIONS;
+  const stationSet = new Set(stations);
+  const rows = new Map(
+    [...parseHourlyRows(input.currentText, input.observationTime)]
+      .filter(([station]) => stationSet.has(station)),
+  );
   const carriedFrom = new Map<number, string>();
   const carriedLines: string[] = [];
-  let missingStations = REPRESENTATIVE_STATIONS.filter((station) => !rows.has(station));
+  let missingStations = stations.filter((station) => !rows.has(station));
   const currentHour = Number(input.observationTime.slice(8, 10));
-  if (missingStations.length === REPRESENTATIVE_STATIONS.length) {
+  if (missingStations.length === stations.length) {
     throw new IncompleteHourlyObservationError(input.observationTime, missingStations);
   }
 
@@ -86,7 +92,7 @@ export async function completeHourlyObservation(
       carriedFrom.set(station, fallbackTime);
       carriedLines.push(row.line);
     }
-    missingStations = REPRESENTATIVE_STATIONS.filter((station) => !rows.has(station));
+    missingStations = stations.filter((station) => !rows.has(station));
   }
 
   if (missingStations.length > 0) {

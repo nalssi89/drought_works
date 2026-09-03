@@ -1,6 +1,12 @@
 import ky, { HTTPError, TimeoutError } from "ky";
 import { z } from "zod";
-import { fetchDailyNormals, fetchHourlyDailyRain, fetchOfficialDailyRain } from "./api-hub";
+import {
+  fetchDailyNormalRange,
+  fetchDailyNormals,
+  fetchHourlyDailyRain,
+  fetchOfficialDailyRain,
+  fetchOfficialDailyRainRange,
+} from "./api-hub";
 import {
   adjustStations,
   aggregateStations,
@@ -10,12 +16,11 @@ import {
   parseObservationTime,
   periodStart,
 } from "./intraday";
+import { KMA_NORMAL_CODE, KMA_STATIONS } from "./kma-stations.ts";
 
 export { latestObservationTime, parseObservationTime };
 
 const PERIODS = ["1m", "3m", "6m", "12m", "ty"] as const;
-const REGION_CODES = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"] as const;
-const ADMIN_CODES = ["01", "02", "03", "04"] as const;
 const KST_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Seoul",
   year: "numeric",
@@ -29,31 +34,6 @@ export type Period = z.infer<typeof periodSchema>;
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const parsed = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
-});
-
-const aggregateSchema = z.object({
-  brtc_cd: z.enum(REGION_CODES),
-  ny_prcp: z.string(),
-  rn_total: z.string(),
-  rn_ratio: z.string(),
-  rank_num: z.string(),
-});
-
-const adminSchema = aggregateSchema.extend({ brtc_cd: z.enum(ADMIN_CODES) });
-const stationSchema = z.object({
-  stn_cd: z.number().int(),
-  stn_nm: z.string().min(1),
-  ny_prcp: z.string(),
-  rn_total: z.string(),
-  rn_ratio_sort: z.number(),
-});
-
-const payloadSchema = z.object({
-  list1: z.array(aggregateSchema).default([]),
-  list2: z.array(stationSchema).default([]),
-  list_admin: z.array(adminSchema).default([]),
-  search_period: z.string().optional(),
-  search_date_db: z.string().optional(),
 });
 
 const cachedStationSchema = z.object({
@@ -82,7 +62,12 @@ const cachedPayloadSchema = z.object({
   regions: z.array(cachedAggregateSchema).default([]),
   admins: z.array(cachedAggregateSchema).default([]),
   fetchedAt: z.string().datetime(),
-});
+  source: z.enum(["daily", "hourly", "intraday"]),
+}).refine((value) => (
+  (value.mode === "official" && value.source === "daily")
+  || (value.mode === "rollover" && value.source === "hourly")
+  || (value.mode === "intraday" && value.source === "intraday")
+), { message: "예약 갱신 자료의 자료원과 산출 모드가 다릅니다." });
 
 export type ScenarioComparison = Readonly<{
   baselinePrecipitation?: number;
@@ -233,29 +218,27 @@ async function loadCachedDashboard(period: Period, mode: "official" | "intraday"
 
 async function loadOne(requestedDate: string, period: Period): Promise<DashboardResult> {
   try {
-    const response = await fetchOfficialPayload(requestedDate, period);
-    const payload = payloadSchema.parse(response);
-    if (payload.list1.length === 0 && payload.list2.length === 0) return { kind: "missing", requestedDate };
-    const validRegions = period === "ty" ? payload.list1.length === 0 : payload.list1.length === 12;
-    if (!validRegions || payload.list2.length !== 66 || payload.list_admin.length !== 4 || !payload.search_period || !payload.search_date_db) {
-      return { kind: "unavailable", message: "공식 서버 응답의 지점 또는 권역 수가 예상과 다릅니다." };
-    }
-    const stations = payload.list2.map((row) => ({
-      code: row.stn_cd,
-      name: row.stn_nm,
-      normal: numeric(row.ny_prcp),
-      precipitation: numeric(row.rn_total),
-      ratio: row.rn_ratio_sort,
-    }));
+    const startDate = periodStart(requestedDate, period);
+    const [rain, normals] = await Promise.all([
+      fetchOfficialDailyRainRange(startDate, requestedDate),
+      fetchDailyNormalRange(startDate, requestedDate),
+    ]);
+    if (rain.size === 0) return { kind: "missing", requestedDate };
+    const stations = KMA_STATIONS.map(([code, name]) => {
+      const precipitation = required(rain, code, "일강수");
+      const normal = required(normals, KMA_NORMAL_CODE.get(code) ?? code, "일평년값");
+      return { code, name, precipitation, normal, ratio: normal > 0 ? round1(precipitation / normal * 100) : 0 };
+    });
+    const aggregates = aggregateStations(stations);
     return {
       kind: "ok",
       data: {
         requestedDate,
-        effectiveDate: `${payload.search_date_db.slice(0, 4)}-${payload.search_date_db.slice(4, 6)}-${payload.search_date_db.slice(6, 8)}`,
-        searchPeriod: payload.search_period,
+        effectiveDate: requestedDate,
+        searchPeriod: `${displayDate(startDate)} ~ ${displayDate(requestedDate)}`,
         period,
-        regions: period === "ty" ? aggregateStations(stations).regions : payload.list1.map(toAggregate),
-        admins: payload.list_admin.map(toAggregate),
+        regions: aggregates.regions,
+        admins: aggregates.admins,
         stations,
         fetchedAt: new Date().toISOString(),
         mode: "official",
@@ -318,46 +301,14 @@ async function loadIntradayDashboard(observationTime: string, period: Period): P
   }
 }
 
-async function fetchOfficialPayload(requestedDate: string, period: Period): Promise<unknown> {
-  const proxyUrl = process.env.KMA_PROXY_URL;
-  const proxyKey = process.env.KMA_PROXY_ANON_KEY;
-  if (proxyUrl && proxyKey) {
-    return ky.get(proxyUrl, {
-      searchParams: { date: requestedDate, period },
-      headers: {
-        apikey: proxyKey,
-        Authorization: `Bearer ${proxyKey}`,
-      },
-      retry: { limit: 2, methods: ["get"] },
-      timeout: 20_000,
-    }).json<unknown>();
-  }
-
-  return ky.post("https://hydro.kma.go.kr/drought/analysisAccData.do", {
-    body: new URLSearchParams({ PERIOD: period, search_date: requestedDate.replaceAll("-", "") }),
-    headers: {
-      Referer: "https://hydro.kma.go.kr/index.do",
-      "X-Requested-With": "XMLHttpRequest",
-    },
-    retry: { limit: 2, methods: ["post"] },
-    timeout: 15_000,
-  }).json<unknown>();
+function required(values: ReadonlyMap<number, number>, code: number, label: string): number {
+  const value = values.get(code);
+  if (value === undefined) throw new TypeError(`${label} ${code} 지점 자료가 없습니다.`);
+  return value;
 }
 
-function toAggregate(row: z.infer<typeof aggregateSchema>): Aggregate {
-  return {
-    code: row.brtc_cd,
-    normal: numeric(row.ny_prcp),
-    precipitation: numeric(row.rn_total),
-    ratio: numeric(row.rn_ratio),
-    rank: numeric(row.rank_num),
-  };
-}
-
-function numeric(value: string): number {
-  const parsed = Number(value.replaceAll(",", ""));
-  if (!Number.isFinite(parsed)) throw new TypeError(`Invalid numeric value: ${value}`);
-  return parsed;
+function round1(value: number): number {
+  return Math.round((value + Number.EPSILON) * 10) / 10;
 }
 
 function displayDate(value: string): string {

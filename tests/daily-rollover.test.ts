@@ -43,23 +43,39 @@ function cachePayload(
     regions: Array.from({ length: 12 }, (_, index) => aggregate(String(index + 1))),
     admins: Array.from({ length: 4 }, (_, index) => aggregate(String(index + 1))),
     fetchedAt: "2026-09-02T00:00:00.000Z",
-    source: mode === "official" ? "hydro" : "intraday",
+    source: mode === "official" ? "daily" : mode === "rollover" ? "hourly" : "intraday",
   };
 }
 
-test("defers final daily data when a representative station still has an RN_DAY sentinel", () => {
+test("treats RN_DSUM -99.9 as zero when every representative station row is published", () => {
   const rows = REPRESENTATIVE_STATIONS.map((station) => {
-    const fields = Array.from({ length: 56 }, () => "-9");
+    const fields = Array.from({ length: 11 }, () => "-999");
     fields[0] = "20260831";
     fields[1] = String(station);
-    fields[2] = "50.0";
-    fields[38] = station === 108 ? "-9.0" : "0.0";
-    return fields.join(" ");
+    fields[5] = station === 108 ? "-99.9" : "0.0";
+    return fields.join(",");
   }).join("\n");
   const requiredStations = new Set(REPRESENTATIVE_STATIONS);
 
+  const rain = parseOfficialDailyRain(rows, "2026-08-31", requiredStations);
+
+  assert.equal(rain.size, REPRESENTATIVE_STATIONS.length);
+  assert.equal(rain.get(108), 0);
+});
+
+test("defers official daily data when a representative station row is absent", () => {
+  const rows = REPRESENTATIVE_STATIONS
+    .filter((station) => station !== 108)
+    .map((station) => {
+      const fields = Array.from({ length: 11 }, () => "-999");
+      fields[0] = "20260831";
+      fields[1] = String(station);
+      fields[5] = "0.0";
+      return fields.join(" ");
+    }).join("\n");
+
   assert.throws(
-    () => parseOfficialDailyRain(rows, "2026-08-31", requiredStations),
+    () => parseOfficialDailyRain(rows, "2026-08-31", REPRESENTATIVE_STATIONS),
     OfficialDataUnavailableError,
   );
 });

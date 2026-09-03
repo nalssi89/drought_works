@@ -1,3 +1,5 @@
+import { KMA_NORMAL_CODE, KMA_STATION_CODES } from "./kma-stations.ts";
+
 type RollingPeriod = "1m" | "3m" | "6m" | "12m";
 type Period = RollingPeriod | "ty";
 
@@ -18,7 +20,6 @@ export type AggregateValue = Readonly<{
 }>;
 
 const MONTHS: Record<RollingPeriod, number> = { "1m": 1, "3m": 3, "6m": 6, "12m": 12 };
-const NORMAL_CODE = new Map([[143, 860], [146, 864]]);
 const KST_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23",
 });
@@ -34,7 +35,7 @@ const GROUPS = {
   gyeongnam: [152, 155, 159, 162, 192, 284, 285, 288, 289, 294, 295],
   jeju: [184, 185, 188, 189],
 } as const;
-const REPRESENTATIVE_STATIONS = new Set(Object.values(GROUPS).flat());
+const REPRESENTATIVE_STATIONS = new Set(KMA_STATION_CODES);
 
 export function periodStart(endDate: string, period: Period): string {
   if (period === "ty") return `${endDate.slice(0, 4)}-01-01`;
@@ -72,15 +73,46 @@ export function parseOfficialDailyRain(text: string, date: string): Map<number, 
   const result = new Map<number, number>();
   const compactDate = date.replaceAll("-", "");
   for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith(`${compactDate} `)) continue;
-    const fields = line.trim().split(/\s+/);
+    if (!line.startsWith(`${compactDate} `) && !line.startsWith(`${compactDate},`)) continue;
+    const fields = dailyFields(line);
     const station = Number(fields[1]);
-    const dailyRain = Number(fields[38]);
+    const dailyRain = Number(fields[5]);
     if (!Number.isInteger(station) || !REPRESENTATIVE_STATIONS.has(station) || !Number.isFinite(dailyRain)) continue;
-    if (dailyRain < 0) throw new TypeError("official daily rain is unavailable");
-    result.set(station, dailyRain);
+    result.set(station, Math.max(0, dailyRain));
   }
   return result;
+}
+
+export function parseOfficialDailyRainTotals(
+  text: string,
+  startDate: string,
+  endDate: string,
+): Map<number, number> {
+  const start = startDate.replaceAll("-", "");
+  const end = endDate.replaceAll("-", "");
+  const totals = new Map<number, number>();
+  const counts = new Map<number, number>();
+  const observations = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    if (!/^\d{8}(?:\s|,)/.test(line)) continue;
+    const fields = dailyFields(line);
+    const date = fields[0];
+    const station = Number(fields[1]);
+    const dailyRain = Number(fields[5]);
+    if (date < start || date > end || !Number.isInteger(station) || !REPRESENTATIVE_STATIONS.has(station) || !Number.isFinite(dailyRain)) continue;
+    const key = `${date}:${station}`;
+    if (observations.has(key)) throw new TypeError(`중복된 일강수 자료입니다: ${key}`);
+    observations.add(key);
+    totals.set(station, round1((totals.get(station) ?? 0) + Math.max(0, dailyRain)));
+    counts.set(station, (counts.get(station) ?? 0) + 1);
+  }
+
+  if (observations.size === 0) return totals;
+  const expectedDays = dateDifference(startDate, endDate) + 1;
+  for (const station of KMA_STATION_CODES) {
+    if (counts.get(station) !== expectedDays) throw new TypeError(`일강수 ${station} 지점 자료가 완전하지 않습니다.`);
+  }
+  return totals;
 }
 
 export function parseDailyNormals(text: string): Map<number, number> {
@@ -127,7 +159,7 @@ export function adjustStations(
   endNormals: ReadonlyMap<number, number>,
 ): StationValue[] {
   return base.map((station) => {
-    const normalCode = NORMAL_CODE.get(station.code) ?? station.code;
+    const normalCode = KMA_NORMAL_CODE.get(station.code) ?? station.code;
     const values = {
       startDayPrecipitation: required(startRain, station.code, "시작일 시간강수"),
       endDayPrecipitation: required(endRain, station.code, "종료일 시간강수"),
@@ -146,7 +178,7 @@ export function extendStations(
   endNormals: ReadonlyMap<number, number>,
 ): StationValue[] {
   return base.map((station) => {
-    const normalCode = NORMAL_CODE.get(station.code) ?? station.code;
+    const normalCode = KMA_NORMAL_CODE.get(station.code) ?? station.code;
     return {
       ...station,
       ...extendStation({
@@ -225,4 +257,12 @@ function addMonths(date: string, months: number): string {
   const lastDay = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 0)).getUTCDate();
   value.setUTCDate(Math.min(day, lastDay));
   return value.toISOString().slice(0, 10);
+}
+
+function dateDifference(startDate: string, endDate: string): number {
+  return Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000);
+}
+
+function dailyFields(line: string): string[] {
+  return line.includes(",") ? line.split(",").map((field) => field.trim()) : line.trim().split(/\s+/);
 }

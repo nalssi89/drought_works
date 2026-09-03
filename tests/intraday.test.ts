@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { parseDailyNormalTotals } from "../app/lib/api-hub.ts";
 import { customIntradayHref } from "../app/lib/custom-query.ts";
 import {
   adjustStation,
@@ -9,6 +10,7 @@ import {
   mergeAggregateRanks,
   parseDailyNormals,
   parseHourlyDailyRain,
+  parseOfficialDailyRainTotals,
   periodStart,
 } from "../app/lib/intraday.ts";
 import { millisecondsUntilNextHourlyRefresh } from "../app/lib/refresh.ts";
@@ -107,6 +109,19 @@ test("carries multiple missing stations from their latest same-day observations"
     [...result.carriedFrom.entries()],
     missingStations.map((station, index) => [station, index < 3 ? "202608211100" : "202608211000"]),
   );
+});
+
+test("completes a requested historical boundary station without requiring all 66 stations", async () => {
+  const observationTime = "202603040000";
+
+  const result = await completeHourlyObservation({
+    observationTime,
+    currentText: hourlyLine(observationTime, 100, 6.7),
+    stations: [100],
+    fetchFallbackText: async () => "",
+  });
+
+  assert.deepEqual(result.rain, new Map([[100, 6.7]]));
 });
 
 test("does not carry an hourly station value across midnight", async () => {
@@ -240,29 +255,34 @@ test("defers an official refresh when KMA daily aggregates are not ready", async
   assert.equal(result, "deferred");
 });
 
-test("uses the ASOS daily fallback when KMA regional aggregates are not ready", async () => {
-  let fallbackRuns = 0;
+test("does not hide an unexpected official refresh failure", async () => {
+  const failure = new TypeError("daily endpoint failed");
 
-  const result = await refreshOfficial(
-    async () => {
-      throw new OfficialDataUnavailableError();
-    },
-    async () => {
-      fallbackRuns += 1;
-    },
+  await assert.rejects(
+    refreshOfficial(async () => {
+      throw failure;
+    }),
+    failure,
   );
-
-  assert.equal(result, "updated");
-  assert.equal(fallbackRuns, 1);
 });
 
-test("reads final RN_DAY from the KMA ASOS daily response", () => {
+test("ignores climatological February 29 in a non-leap target year", () => {
+  const rows = [
+    "2021,108,2,28,0,0,0,1.0",
+    "2021,108,2,29,0,0,0,9.0",
+    "2021,108,3,1,0,0,0,2.0",
+  ].join("\n");
+
+  assert.equal(parseDailyNormalTotals(rows, 2026).get(108), 3);
+  assert.equal(parseDailyNormalTotals(rows, 2028).get(108), 12);
+});
+
+test("reads RN_DSUM and treats -99.9 as zero from the KMA daily rainfall response", () => {
   const rows = Array.from({ length: 60 }, (_, index) => {
-    const fields = Array.from({ length: 56 }, () => "-9");
+    const fields = Array.from({ length: 11 }, () => "-999");
     fields[0] = "20260818";
     fields[1] = String(90 + index);
-    fields[2] = "1.6";
-    fields[38] = index === 18 ? "12.4" : "0.0";
+    fields[5] = index === 18 ? "12.4" : "-99.9";
     return fields.join(" ");
   }).join("\n");
 
@@ -270,6 +290,25 @@ test("reads final RN_DAY from the KMA ASOS daily response", () => {
 
   assert.equal(rain.get(90), 0);
   assert.equal(rain.get(108), 12.4);
+});
+
+test("totals a multi-day RN_DSUM range and requires every representative station day", () => {
+  const rows = ["20260801", "20260802"].flatMap((date, dayIndex) => REPRESENTATIVE_STATIONS.map((station) => {
+    const fields = Array.from({ length: 11 }, () => "-999");
+    fields[0] = date;
+    fields[1] = String(station);
+    fields[5] = station === 108 ? (dayIndex === 0 ? "12.4" : "-99.9") : "0.0";
+    return fields.join(" ");
+  }));
+
+  const rain = parseOfficialDailyRainTotals(rows.join("\n"), "2026-08-01", "2026-08-02");
+
+  assert.equal(rain.size, REPRESENTATIVE_STATIONS.length);
+  assert.equal(rain.get(108), 12.4);
+  assert.throws(
+    () => parseOfficialDailyRainTotals(rows.slice(1).join("\n"), "2026-08-01", "2026-08-02"),
+    /자료가 완전하지 않습니다/,
+  );
 });
 
 test("finalizes the official day and carries the last published ranks", () => {

@@ -1,15 +1,8 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import ky from "ky";
-import {
-  cachedPayloadToOfficial,
-  officialPayloadReady,
-  OFFICIAL_PERIODS,
-  type OfficialPeriod,
-} from "../_shared/official-cache-fallback.ts";
 import { selectHourlyObservation } from "../_shared/hourly-selection.ts";
 
-const PERIODS = new Set<OfficialPeriod>(OFFICIAL_PERIODS);
 const API_BASE = "https://apihub.kma.go.kr/api/typ01/url";
 
 Deno.serve(async (request: Request) => {
@@ -17,98 +10,9 @@ Deno.serve(async (request: Request) => {
 
   const url = new URL(request.url);
   const api = url.searchParams.get("api");
-  if (api) return proxyApiHub(request, url, api);
-  const date = url.searchParams.get("date") ?? "";
-  const period = url.searchParams.get("period") ?? "";
-  const start = url.searchParams.get("start") ?? "";
-  if (!validDate(date) || (period === "custom" ? !validCustomRange(start, date) : !PERIODS.has(period as OfficialPeriod))) {
-    return Response.json({ error: "invalid date or period" }, { status: 400 });
-  }
-
-  try {
-    const custom = period === "custom";
-    let payload: unknown;
-    try {
-      payload = await ky.post(custom ? "https://hydro.kma.go.kr/ext/prec.do" : "https://hydro.kma.go.kr/drought/analysisAccData.do", {
-        headers: {
-          Accept: "application/json, text/javascript, */*; q=0.01",
-          "Accept-Language": "ko-KR,ko;q=0.9",
-          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-          Origin: "https://hydro.kma.go.kr",
-          Referer: custom ? "https://hydro.kma.go.kr/ext/prec_map.do" : "https://hydro.kma.go.kr/index.do",
-          "User-Agent": "Mozilla/5.0 (compatible; KMA-Precipitation-Dashboard/1.0)",
-          "X-Requested-With": "XMLHttpRequest",
-        },
-        body: custom
-          ? new URLSearchParams({ PERIOD: "random", START: start.replaceAll("-", ""), END: date.replaceAll("-", ""), SPOT: "2", DATE: date.replaceAll("-", "") })
-          : new URLSearchParams({ PERIOD: period, search_date: date.replaceAll("-", "") }),
-        retry: { limit: 2, methods: ["post"] },
-        timeout: custom ? 60_000 : 20_000,
-      }).json<unknown>();
-    }
-    catch (error) {
-      if (!custom) {
-        const cached = await cachedOfficialResponse(date, period as OfficialPeriod);
-        if (cached) return cached;
-      }
-      throw error;
-    }
-
-    if (custom) {
-      const validPayload = isRecord(payload) && Array.isArray(payload.t1) && Array.isArray(payload.t2) && Array.isArray(payload.t4);
-      if (!validPayload) return Response.json({ error: "invalid upstream response" }, { status: 502 });
-      return Response.json(payload, { headers: { "Cache-Control": "public, max-age=300" } });
-    }
-
-    const officialPeriod = period as OfficialPeriod;
-    if (officialPayloadReady(payload, officialPeriod)) {
-      return Response.json(payload, { headers: { "Cache-Control": "public, max-age=300" } });
-    }
-    const cached = await cachedOfficialResponse(date, officialPeriod);
-    if (cached) return cached;
-    return Response.json({ error: "invalid upstream response" }, { status: 502 });
-  } catch (error) {
-    if (error instanceof Error) return Response.json({ error: "upstream unavailable" }, { status: 502 });
-    throw error;
-  }
+  if (!api) return Response.json({ error: "invalid api query" }, { status: 400 });
+  return proxyApiHub(request, url, api);
 });
-
-async function cachedOfficialResponse(date: string, period: OfficialPeriod): Promise<Response | null> {
-  const cached = cachedPayloadToOfficial(await fetchCachedOfficialPayload(period), date, period);
-  if (!cached) return null;
-  return Response.json(cached, {
-    headers: {
-      "Cache-Control": "public, max-age=300",
-      "X-KMA-Data-Source": "official-cache",
-    },
-  });
-}
-
-async function fetchCachedOfficialPayload(period: OfficialPeriod): Promise<unknown> {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!supabaseUrl || !serviceKey) return null;
-  try {
-    const rows = await ky.get(`${supabaseUrl.replace(/\/$/, "")}/rest/v1/kma_precip_cache`, {
-      searchParams: {
-        select: "payload",
-        cache_key: `eq.official:${period}`,
-        limit: "1",
-      },
-      headers: {
-        apikey: serviceKey,
-        Authorization: `Bearer ${serviceKey}`,
-      },
-      retry: { limit: 2, methods: ["get"] },
-      timeout: 10_000,
-    }).json<unknown>();
-    if (!Array.isArray(rows) || !isRecord(rows[0])) return null;
-    return rows[0].payload;
-  }
-  catch {
-    return null;
-  }
-}
 
 async function proxyApiHub(request: Request, url: URL, api: string): Promise<Response> {
   const authKey = request.headers.get("x-kma-auth");
@@ -162,10 +66,14 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
     let searchParams: Record<string, string>;
     let cacheControl = "public, max-age=60";
     if (api === "daily") {
-      const tm = url.searchParams.get("tm") ?? "";
-      if (!/^\d{8}$/.test(tm)) return Response.json({ error: "invalid daily query" }, { status: 400 });
-      path = "kma_sfcdd.php";
-      searchParams = { tm, stn: "0", disp: "0", help: "0", authKey };
+      const tm1 = url.searchParams.get("tm1") ?? "";
+      const tm2 = url.searchParams.get("tm2") ?? "";
+      const stnId = url.searchParams.get("stn_id") ?? "0";
+      if (!/^\d{8}$/.test(tm1) || !/^\d{8}$/.test(tm2) || tm1 > tm2 || !/^\d+(?::\d+)*$/.test(stnId)) {
+        return Response.json({ error: "invalid daily query" }, { status: 400 });
+      }
+      path = "sts_rn.php";
+      searchParams = { tm1, tm2, stn_id: stnId, disp: "1", help: "0", authKey };
     }
     else if (api === "normal" || api === "normal-range") {
       const month1 = url.searchParams.get("MM1") ?? "";
@@ -181,7 +89,8 @@ async function proxyApiHub(request: Request, url: URL, api: string): Promise<Res
     }
     else return Response.json({ error: "invalid api query" }, { status: 400 });
 
-    const text = await apiText(path, searchParams, api === "normal-range" ? 60_000 : 20_000);
+    const longRange = api === "normal-range" || (api === "daily" && searchParams.tm1 !== searchParams.tm2);
+    const text = await apiText(path, searchParams, longRange ? 60_000 : 20_000);
     return new Response(text, {
       headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": cacheControl },
     });
@@ -197,22 +106,6 @@ async function apiText(path: string, searchParams: Record<string, string>, timeo
     retry: { limit: 2, methods: ["get"] },
     timeout,
   }).text();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function validCustomRange(start: string, end: string): boolean {
-  if (!validDate(start)) return false;
-  const elapsedDays = Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000);
-  return elapsedDays >= 0 && elapsedDays <= 366;
-}
-
-function validDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00Z`);
-  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }
 
 function validMonthDay(month: string, day: string): boolean {

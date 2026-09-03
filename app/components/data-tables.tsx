@@ -10,7 +10,6 @@ const ADMIN_LABELS = ["중부\n(서울·경기, 강원 전체, 충북, 충남)",
 const NUMBER_FORMATTER = new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 export function RegionTable({ data }: Readonly<{ data: DashboardTableData }>) {
-  const denominator = Number(data.effectiveDate.slice(0, 4)) - 1972;
   return (
     <div className="table-scroll region-table-scroll">
       <table className="region-matrix">
@@ -27,7 +26,6 @@ export function RegionTable({ data }: Readonly<{ data: DashboardTableData }>) {
               <MetricRow label="평년값 (mm)" cells={data.regions.map((row) => cell(row.code, format(row.normal)))} />
               <MetricRow bold label="평년비 (%)" cells={data.regions.map((row) => cell(row.code, format(row.ratio), ratioCellClass(row.ratio)))} />
               <MetricRow label="강수부족량 (mm)" cells={data.regions.map((row) => cell(row.code, shortage(row)))} />
-              <MetricRow label="최저순위 (73년이후)" cells={data.regions.map((row) => cell(row.code, row.rank === null ? "—" : `${row.rank}/${denominator}`))} />
             </>}
         </tbody>
       </table>
@@ -36,7 +34,6 @@ export function RegionTable({ data }: Readonly<{ data: DashboardTableData }>) {
 }
 
 export function AdminTable({ data }: Readonly<{ data: DashboardTableData }>) {
-  const denominator = Number(data.effectiveDate.slice(0, 4)) - 1972;
   return (
     <div className="table-scroll admin-table-scroll">
       <table className="admin-matrix">
@@ -50,7 +47,6 @@ export function AdminTable({ data }: Readonly<{ data: DashboardTableData }>) {
               <MetricRow label="평년값 (mm)" cells={data.admins.map((row) => cell(row.code, format(row.normal)))} />
               <MetricRow bold label="평년비 (%)" cells={data.admins.map((row) => cell(row.code, format(row.ratio), ratioCellClass(row.ratio)))} />
               <MetricRow label="강수부족량 (mm)" cells={data.admins.map((row) => cell(row.code, shortage(row)))} />
-              <MetricRow label="최저순위 (73년이후)" cells={data.admins.map((row) => cell(row.code, row.rank === null ? "—" : `${row.rank}/${denominator}`))} />
             </>}
         </tbody>
       </table>
